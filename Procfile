@@ -1,0 +1,1 @@
+worker: python bitunix_alert.py
