@@ -7,6 +7,7 @@ Monitors ALL futures pairs for sudden spikes/drops.
 import time
 import requests
 import logging
+import os
 from collections import defaultdict, deque
 from datetime import datetime, timezone
 from typing import Dict, Deque, Tuple
@@ -16,8 +17,8 @@ POLL_INTERVAL = 5          # seconds between full ticker fetches
 LOOKBACK_SECONDS = 10      # how far back to measure the move
 THRESHOLD_PCT = 1.0        # alert if |change| >= this % within LOOKBACK
 MIN_VOLUME_USDT = 50000    # ignore low-volume pairs
-TELEGRAM_BOT_TOKEN = "8778127063:AAHfzKBvJKZT3yV8MdGer7peIqakDo-8s38"
-TELEGRAM_CHAT_ID = "-1004436823649"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 # ====================================================
 
 logging.basicConfig(
