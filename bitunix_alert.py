@@ -15,7 +15,7 @@ from typing import Dict, Deque, Tuple
 # ====================== CONFIG ======================
 POLL_INTERVAL = 5          # seconds between full ticker fetches
 LOOKBACK_SECONDS = 10      # how far back to measure the move
-THRESHOLD_PCT = 1.0        # alert if |change| >= this % within LOOKBACK
+THRESHOLD_PCT = 2.0        # alert if |change| >= this % within LOOKBACK
 MIN_VOLUME_USDT = 50000    # ignore low-volume pairs
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
