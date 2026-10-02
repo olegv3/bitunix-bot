@@ -13,9 +13,9 @@ from market_filters import allowed, chart_link, strength
 
 POLL_INTERVAL = 5
 LOOKBACK_SECONDS = 10
-THRESHOLD_PCT = 2.0
+THRESHOLD_PCT = 1.0
 MIN_VOLUME_USDT = 200000
-COOLDOWN_SECONDS = 60
+COOLDOWN_SECONDS = 180
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 
 logging.basicConfig(
@@ -85,6 +85,8 @@ def check(symbol: str, price: float, now: float) -> None:
         f"{chart_link(symbol)}"
     )
     log.warning("%s %s %.2f%%", label, symbol, change)
+    if "HIGH" not in label:
+        return
     send_telegram(msg)
 
 
