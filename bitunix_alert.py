@@ -13,7 +13,7 @@ from market_filters import allowed, chart_link, strength
 
 POLL_INTERVAL = 5
 LOOKBACK_SECONDS = 10
-THRESHOLD_PCT = 1.0
+THRESHOLD_PCT = 2.0
 MIN_VOLUME_USDT = 200000
 COOLDOWN_SECONDS = 180
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
