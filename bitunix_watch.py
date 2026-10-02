@@ -16,7 +16,7 @@ from collections import defaultdict, deque
 import requests
 from websocket import WebSocketApp
 
-from market_context import score as context_score
+from market_context import note_btc, score as context_score
 from market_filters import allowed, chart_link
 
 # ====================== CONFIG ======================
@@ -26,6 +26,9 @@ MIN_NOTIONAL = 40000          # burst size required before a WATCH alert
 IMBALANCE = 0.85              # 85% of recent notional on one side
 BOOK_IMBALANCE = 0.75         # top-of-book must agree
 COOLDOWN_SECONDS = 60
+FOLLOW_PCT = 0.6
+FOLLOW_SECONDS = 30
+PERSIST_SECONDS = 8
 DEPTH_CHANNEL = "depth_book5"
 PAIRS_PER_CONNECTION = 120    # 120 x 2 channels = 240, under the 300 cap
 WS_URL = "wss://fapi.bitunix.com/public/"
@@ -45,6 +48,8 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 trades = defaultdict(lambda: deque(maxlen=400))
 books = {}
 last_alert = {}
+last_prices = {}
+pending = {}
 lock = threading.Lock()
 
 
@@ -108,63 +113,97 @@ def book_ratio(symbol: str):
 
 
 def check_symbol(symbol: str, now: float) -> None:
+    ev = evaluate(symbol, now)
+    state = pending.get(symbol)
+    price = last_prices.get(symbol)
+
+    if state and state["hits"] >= 2:
+        armed = state["armed"]
+        base = state["price"]
+        if price and base:
+            move = (price - base) / base * 100
+            hit = move >= FOLLOW_PCT if state["side"] == "spike" else move <= -FOLLOW_PCT
+            if hit:
+                send_watch(symbol, state, move, now)
+                pending.pop(symbol, None)
+                return
+        if now - armed > FOLLOW_SECONDS or (ev and ev["side"] != state["side"]):
+            pending.pop(symbol, None)
+        return
+
+    if not ev:
+        if state and now - state["since"] > 20:
+            pending.pop(symbol, None)
+        return
+    if now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
+        return
+    if state is None or state["side"] != ev["side"]:
+        pending[symbol] = {"hits": 1, "since": now, "side": ev["side"], "price": price, "ev": ev}
+        return
+    if now - state["since"] >= PERSIST_SECONDS:
+        state["hits"] = 2
+        state["armed"] = now
+        state["price"] = price
+        state["ev"] = ev
+
+
+def evaluate(symbol: str, now: float):
     with lock:
         recent = [row for row in trades[symbol] if now - row[0] <= WINDOW_SECONDS]
     if len(recent) < 4:
-        return
+        return None
     buy = sum(n for _, side, n in recent if side == "buy")
     sell = sum(n for _, side, n in recent if side == "sell")
     total = buy + sell
     if total < MIN_NOTIONAL:
-        return
-
+        return None
     buy_share = buy / total
     sell_share = sell / total
-    bid_share, bid_notional, ask_notional = book_ratio(symbol)
-
-    # Book must agree. A missing book is not confident enough.
+    bid_share, _, _ = book_ratio(symbol)
     if bid_share is None:
-        return
+        return None
     side = None
     if buy_share >= IMBALANCE and bid_share >= BOOK_IMBALANCE:
         side = "spike"
     elif sell_share >= IMBALANCE and bid_share <= 1 - BOOK_IMBALANCE:
         side = "drop"
-    if not side or now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
-        return
-    points, reasons = context_score(symbol, side, total)
-    # Flow and book already agreed. Require at least one extra check.
-    if points < 1:
+    if not side:
+        return None
+    return {
+        "side": side,
+        "buy_share": buy_share,
+        "sell_share": sell_share,
+        "total": total,
+        "bid_share": bid_share,
+    }
+
+
+def send_watch(symbol: str, state: dict, move: float, now: float) -> None:
+    ev = state["ev"]
+    side = state["side"]
+    points, reasons, with_btc = context_score(symbol, side, ev["total"], FOLLOW_SECONDS)
+    if points < 1 or with_btc:
         return
     last_alert[symbol] = now
     extra = "\n".join(f"• {item}" for item in reasons)
-
+    bid_share = ev["bid_share"]
     if side == "spike":
         msg = (
             f"🟡 <b>WATCH SPIKE</b> {symbol}\n"
-            f"Buy flow: <b>{buy_share:.0%}</b> of ${total:,.0f} in {WINDOW_SECONDS}s\n"
-            + (
-                f"Top book bids: <b>{bid_share:.0%}</b>\n"
-                if bid_share is not None
-                else ""
-            )
-            + extra
-            + f"\nConfidence checks: {points}\n"
-            + chart_link(symbol)
+            f"Follow-through <b>{move:+.2f}%</b> in {FOLLOW_SECONDS:.0f}s\n"
+            f"Buy flow: <b>{ev['buy_share']:.0%}</b> of ${ev['total']:,.0f}\n"
+            f"Top book bids: <b>{bid_share:.0%}</b>\n"
+            f"{extra}\nConfidence checks: {points}\n"
+            f"{chart_link(symbol)}"
         )
     else:
-        ask_share = None if bid_share is None else 1 - bid_share
         msg = (
             f"🟠 <b>WATCH DROP</b> {symbol}\n"
-            f"Sell flow: <b>{sell_share:.0%}</b> of ${total:,.0f} in {WINDOW_SECONDS}s\n"
-            + (
-                f"Top book asks: <b>{ask_share:.0%}</b>\n"
-                if ask_share is not None
-                else ""
-            )
-            + extra
-            + f"\nConfidence checks: {points}\n"
-            + chart_link(symbol)
+            f"Follow-through <b>{move:+.2f}%</b> in {FOLLOW_SECONDS:.0f}s\n"
+            f"Sell flow: <b>{ev['sell_share']:.0%}</b> of ${ev['total']:,.0f}\n"
+            f"Top book asks: <b>{1 - bid_share:.0%}</b>\n"
+            f"{extra}\nConfidence checks: {points}\n"
+            f"{chart_link(symbol)}"
         )
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
@@ -190,6 +229,9 @@ def on_message(_ws, raw: str) -> None:
                     continue
                 if side in ("buy", "sell") and price > 0 and qty > 0:
                     trades[symbol].append((now, side, price * qty))
+                    last_prices[symbol] = price
+                    if symbol == "BTCUSDT":
+                        note_btc(price, now)
         check_symbol(symbol, now)
     elif ch == DEPTH_CHANNEL and symbol and isinstance(data, dict):
         books[symbol] = data
