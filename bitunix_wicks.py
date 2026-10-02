@@ -13,11 +13,11 @@ import time
 
 import requests
 
-MIN_VOLUME_USDT = 200000
-MIN_RANGE_PCT = 0.8          # ignore tiny candles
-WICK_TO_BODY = 1.5           # wick must be at least 1.5x the body
-WICK_SHARE = 0.45            # wick must be at least 45% of the whole candle
-COOLDOWN_SECONDS = 90
+MIN_VOLUME_USDT = 500000
+MIN_RANGE_PCT = 1.5          # ignore small candles
+WICK_TO_BODY = 2.5           # wick must be at least 2.5x the body
+WICK_SHARE = 0.60            # wick must be at least 60% of the whole candle
+COOLDOWN_SECONDS = 180
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
@@ -106,21 +106,26 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
         wick_pct = lower / open_ * 100
     if not side or now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
         return
+    context_side = "drop" if side == "upper" else "spike"
+    points, reasons = context_score(symbol, context_side)
+    if points < 1:
+        return
     last_alert[symbol] = now
+    extra = "\n".join(f"• {item}" for item in reasons)
 
     if side == "upper":
         msg = (
             f"🔻 <b>UPPER WICK</b> {symbol}\n"
             f"Rejected high. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
-            f"Possible rejection, not a confirmed drop"
+            f"{extra}\nConfidence checks: {points}"
         )
     else:
         msg = (
             f"🔺 <b>LOWER WICK</b> {symbol}\n"
             f"Rejected low. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
-            f"Possible bounce, not a confirmed spike"
+            f"{extra}\nConfidence checks: {points}"
         )
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
