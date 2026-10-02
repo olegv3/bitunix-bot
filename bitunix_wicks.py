@@ -13,11 +13,14 @@ import time
 
 import requests
 
+from market_context import score as context_score
+from market_filters import allowed, chart_link, strength
+
 MIN_VOLUME_USDT = 200000
 MIN_RANGE_PCT = 1.5          # ignore small candles
 WICK_TO_BODY = 2.5           # wick must be at least 2.5x the body
 WICK_SHARE = 0.60            # wick must be at least 60% of the whole candle
-COOLDOWN_SECONDS = 180
+COOLDOWN_SECONDS = 60
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
@@ -60,7 +63,7 @@ def load_symbols() -> list:
             volume = float(row.get("quoteVol") or 0)
         except (TypeError, ValueError):
             volume = 0
-        if row.get("symbol") and volume >= MIN_VOLUME_USDT:
+        if row.get("symbol") and volume >= MIN_VOLUME_USDT and allowed(row["symbol"]):
             symbols.append(row["symbol"])
     return sorted(set(symbols))
 
@@ -113,19 +116,22 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
     last_alert[symbol] = now
     extra = "\n".join(f"• {item}" for item in reasons)
 
+    label = strength(range_pct)
     if side == "upper":
         msg = (
-            f"🔻 <b>UPPER WICK</b> {symbol}\n"
+            f"🔻 <b>UPPER WICK</b> {symbol}  {label}\n"
             f"Rejected high. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
-            f"{extra}\nConfidence checks: {points}"
+            f"{extra}\nConfidence checks: {points}\n"
+            f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
         )
     else:
         msg = (
-            f"🔺 <b>LOWER WICK</b> {symbol}\n"
+            f"🔺 <b>LOWER WICK</b> {symbol}  {label}\n"
             f"Rejected low. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
-            f"{extra}\nConfidence checks: {points}"
+            f"{extra}\nConfidence checks: {points}\n"
+            f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
         )
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
