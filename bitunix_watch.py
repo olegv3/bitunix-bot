@@ -16,13 +16,16 @@ from collections import defaultdict, deque
 import requests
 from websocket import WebSocketApp
 
+from market_context import score as context_score
+from market_filters import allowed, chart_link
+
 # ====================== CONFIG ======================
 MIN_VOLUME_USDT = 200000      # skip thinner pairs
 WINDOW_SECONDS = 8
 MIN_NOTIONAL = 40000          # burst size required before a WATCH alert
 IMBALANCE = 0.85              # 85% of recent notional on one side
 BOOK_IMBALANCE = 0.75         # top-of-book must agree
-COOLDOWN_SECONDS = 180
+COOLDOWN_SECONDS = 60
 DEPTH_CHANNEL = "depth_book5"
 PAIRS_PER_CONNECTION = 120    # 120 x 2 channels = 240, under the 300 cap
 WS_URL = "wss://fapi.bitunix.com/public/"
@@ -78,7 +81,7 @@ def load_symbols() -> list:
             volume = float(volume)
         except (TypeError, ValueError):
             volume = 0
-        if symbol and volume >= MIN_VOLUME_USDT:
+        if symbol and volume >= MIN_VOLUME_USDT and allowed(symbol):
             symbols.append(symbol)
     symbols = sorted(set(symbols))
     log.info("Watching %s pairs with 24h volume >= %s", len(symbols), MIN_VOLUME_USDT)
@@ -146,7 +149,8 @@ def check_symbol(symbol: str, now: float) -> None:
                 else ""
             )
             + extra
-            + f"\nConfidence checks: {points}"
+            + f"\nConfidence checks: {points}\n"
+            + f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
         )
     else:
         ask_share = None if bid_share is None else 1 - bid_share
@@ -159,7 +163,8 @@ def check_symbol(symbol: str, now: float) -> None:
                 else ""
             )
             + extra
-            + f"\nConfidence checks: {points}"
+            + f"\nConfidence checks: {points}\n"
+            + f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
         )
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
