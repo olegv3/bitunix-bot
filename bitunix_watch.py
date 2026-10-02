@@ -17,7 +17,7 @@ import requests
 from websocket import WebSocketApp
 
 # ====================== CONFIG ======================
-MIN_VOLUME_USDT = 500000      # skip thinner pairs
+MIN_VOLUME_USDT = 200000      # skip thinner pairs
 WINDOW_SECONDS = 8
 MIN_NOTIONAL = 40000          # burst size required before a WATCH alert
 IMBALANCE = 0.85              # 85% of recent notional on one side
