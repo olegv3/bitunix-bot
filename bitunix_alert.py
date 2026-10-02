@@ -1,25 +1,21 @@
 #!/usr/bin/env python3
-"""
-Bitunix Futures Sudden Price Move Alert Bot
-Monitors ALL futures pairs for sudden spikes/drops.
-"""
+"""Confirmed Bitunix futures spike/drop alerts."""
 
-import time
-import requests
 import logging
 import os
+import time
 from collections import defaultdict, deque
-from datetime import datetime, timezone
-from typing import Dict, Deque, Tuple
 
-# ====================== CONFIG ======================
-POLL_INTERVAL = 5          # seconds between full ticker fetches
-LOOKBACK_SECONDS = 10      # how far back to measure the move
-THRESHOLD_PCT = 2.0        # alert if |change| >= this % within LOOKBACK
-MIN_VOLUME_USDT = 50000    # ignore low-volume pairs
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-# ====================================================
+import requests
+
+from market_filters import allowed, chart_link, strength
+
+POLL_INTERVAL = 5
+LOOKBACK_SECONDS = 10
+THRESHOLD_PCT = 1.0
+MIN_VOLUME_USDT = 200000
+COOLDOWN_SECONDS = 60
+TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,100 +24,81 @@ logging.basicConfig(
 )
 log = logging.getLogger("bitunix-alert")
 
-BASE_URL = "https://fapi.bitunix.com"
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+history = defaultdict(lambda: deque(maxlen=200))
+last_alert = {}
 
-price_history: Dict[str, Deque[Tuple[float, float]]] = defaultdict(
-    lambda: deque(maxlen=200)
-)
 
-def get_all_tickers() -> list:
-    url = f"{BASE_URL}/api/v1/futures/market/tickers"
-    try:
-        r = requests.get(url, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        if data.get("code") != 0:
-            log.error("API error: %s", data.get("msg"))
-            return []
-        return data.get("data", [])
-    except Exception as e:
-        log.error("Failed to fetch tickers: %s", e)
-        return []
-
-def send_telegram(message: str):
+def send_telegram(text: str) -> None:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print(text)
         return
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     try:
-        requests.post(url, json={
-            "chat_id": TELEGRAM_CHAT_ID,
-            "text": message,
-            "parse_mode": "HTML",
-            "disable_web_page_preview": True,
-        }, timeout=10)
-    except Exception as e:
-        log.error("Telegram send failed: %s", e)
-
-def check_and_alert(symbol: str, price: float, now: float):
-    history = price_history[symbol]
-    history.append((now, price))
-
-    cutoff = now - LOOKBACK_SECONDS
-    while history and history[0][0] < cutoff:
-        history.popleft()
-
-    if len(history) < 2:
-        return
-
-    old_ts, old_price = history[0]
-    if old_price <= 0:
-        return
-
-    change_pct = ((price - old_price) / old_price) * 100
-    elapsed = now - old_ts
-
-    if abs(change_pct) >= THRESHOLD_PCT:
-        direction = "🚀 SPIKE" if change_pct > 0 else "📉 DROP"
-        msg = (
-            f"<b>{direction}</b> on <b>{symbol}</b>\n"
-            f"Change: <b>{change_pct:+.2f}%</b> in {elapsed:.0f}s\n"
-            f"From {old_price:.6g} → {price:.6g}\n"
-            f"Time: {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}"
+        requests.post(
+            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
+            json={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": text,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=10,
         )
-        log.warning("%s %+.2f%% in %.0fs  %s → %s",
-                    symbol, change_pct, elapsed, old_price, price)
-        print(msg.replace("<b>", "").replace("</b>", ""))
-        send_telegram(msg)
+    except Exception as exc:
+        log.error("Telegram send failed: %s", exc)
 
-def main():
-    log.info("Starting Bitunix Futures alert bot")
-    log.info("Threshold: ±%.1f%% within %ds | Poll every %ds",
-             THRESHOLD_PCT, LOOKBACK_SECONDS, POLL_INTERVAL)
 
+def check(symbol: str, price: float, now: float) -> None:
+    rows = history[symbol]
+    rows.append((now, price))
+    old = next((item for item in rows if now - item[0] >= LOOKBACK_SECONDS), None)
+    if not old:
+        return
+    old_time, old_price = old
+    if old_price <= 0 or now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
+        return
+    change = (price - old_price) / old_price * 100
+    if abs(change) < THRESHOLD_PCT:
+        return
+    last_alert[symbol] = now
+    elapsed = now - old_time
+    label = strength(change)
+    if change > 0:
+        title = f"🟢🟢🟢 <b>SPIKE</b> 🟢🟢🟢  {label}"
+    else:
+        title = f"🔴🔴🔴 <b>DROP</b> 🔴🔴🔴  {label}"
+    msg = (
+        f"{title}\n"
+        f"<b>{symbol}</b>  <b>{change:+.2f}%</b> in {elapsed:.0f}s\n"
+        f"{old_price:.6g} → {price:.6g}\n"
+        f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
+    )
+    log.warning("%s %s %.2f%%", label, symbol, change)
+    send_telegram(msg)
+
+
+def main() -> None:
+    log.info("Starting confirmed alert bot, cooldown %ss", COOLDOWN_SECONDS)
     while True:
-        start = time.time()
-        tickers = get_all_tickers()
-        now = time.time()
+        try:
+            rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
+            now = time.time()
+            for row in rows:
+                symbol = row.get("symbol")
+                if not symbol or not allowed(symbol):
+                    continue
+                try:
+                    price = float(row.get("lastPrice") or row.get("last") or 0)
+                    volume = float(row.get("quoteVol") or 0)
+                except (TypeError, ValueError):
+                    continue
+                if price > 0 and volume >= MIN_VOLUME_USDT:
+                    check(symbol, price, now)
+        except Exception as exc:
+            log.error("Ticker fetch failed: %s", exc)
+        time.sleep(POLL_INTERVAL)
 
-        for t in tickers:
-            symbol = t.get("symbol")
-            last = t.get("lastPrice") or t.get("last")
-            vol = float(t.get("quoteVol") or 0)
-
-            if not symbol or not last:
-                continue
-            if vol < MIN_VOLUME_USDT:
-                continue
-
-            try:
-                price = float(last)
-                check_and_alert(symbol, price, now)
-            except (ValueError, TypeError):
-                continue
-
-        elapsed = time.time() - start
-        sleep_time = max(0.5, POLL_INTERVAL - elapsed)
-        time.sleep(sleep_time)
 
 if __name__ == "__main__":
     main()
