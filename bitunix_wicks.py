@@ -123,7 +123,7 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
             f"Rejected high. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
             f"{extra}\nConfidence checks: {points}\n"
-            f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
+            f"{chart_link(symbol)}"
         )
     else:
         msg = (
@@ -131,7 +131,7 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
             f"Rejected low. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
             f"{extra}\nConfidence checks: {points}\n"
-            f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
+            f"{chart_link(symbol)}"
         )
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
