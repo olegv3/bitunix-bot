@@ -13,7 +13,7 @@ import time
 
 import requests
 
-MIN_VOLUME_USDT = 500000
+MIN_VOLUME_USDT = 200000
 MIN_RANGE_PCT = 1.5          # ignore small candles
 WICK_TO_BODY = 2.5           # wick must be at least 2.5x the body
 WICK_SHARE = 0.60            # wick must be at least 60% of the whole candle
