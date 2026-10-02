@@ -129,14 +129,14 @@ def move_needed(symbol: str) -> float:
     return BTC_MOVE_PCT if symbol == "BTCUSDT" else MOVE_PCT
 
 
-def check(symbol: str, price: float, now: float, day_high: float, day_low: float) -> None:
+def check(symbol: str, price: float, now: float, day_high: float, day_low: float, day_open: float) -> None:
     follow_up(symbol, price)
     rows = history[symbol]
     rows.append((now, price))
     window = [item for item in rows if now - item[0] <= WINDOW_SECONDS]
     if symbol in open_setups:
         return
-    if len(window) < 8:
+    if len(window) < 2:
         window = [(now, price)]
     high_i = max(range(len(window)), key=lambda i: window[i][1])
     low_i = min(range(len(window)), key=lambda i: window[i][1])
@@ -146,28 +146,28 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
         return
 
     needed = move_needed(symbol)
-    dump = (high - price) / high * 100 if high else 0
-    pump = (price - low) / low * 100 if low else 0
-    day_range = (day_high - day_low) / day_low * 100 if day_low else 0
+    day_change = (price - day_open) / day_open * 100 if day_open else 0
     near_high = day_high and (day_high - price) / day_high * 100 <= 1.5
     near_low = day_low and (price - day_low) / day_low * 100 <= 1.5
+    pump = (price - low) / low * 100 if low else 0
+    dump = (high - price) / high * 100 if high else 0
     if now - last_candidate.get(symbol, 0) >= COOLDOWN_SECONDS:
-        if (pump >= needed and now - high_time <= FRESH_SECONDS) or (near_high and day_range >= 8):
+        if (near_high and day_change >= 8) or (pump >= needed and now - high_time <= FRESH_SECONDS):
             last_candidate[symbol] = now
             send_telegram(
-                f"📈 <b>PUMPING</b> {symbol}\n"
-                f"Up <b>{pump:.1f}%</b> in 30m, <b>{day_range:.1f}%</b> off the 24h low\n"
-                f"Price: {price:.6g}, near the high\n"
-                f"Watching for a short. Not an order\n"
+                f"🟠 <b>WATCHING SHORT</b> {symbol}\n"
+                f"Up <b>{day_change:.1f}%</b> today, price {price:.6g}\n"
+                f"Day high {day_high:.6g}. Still near the high\n"
+                f"Same idea as a watch call. Not an order\n"
                 f"{chart_link(symbol)}"
             )
-        elif (dump >= needed and now - low_time <= FRESH_SECONDS) or (near_low and day_range >= 8):
+        elif (near_low and day_change <= -8) or (dump >= needed and now - low_time <= FRESH_SECONDS):
             last_candidate[symbol] = now
             send_telegram(
-                f"📉 <b>DUMPING</b> {symbol}\n"
-                f"Down <b>{dump:.1f}%</b> in 30m, <b>{day_range:.1f}%</b> off the 24h high\n"
-                f"Price: {price:.6g}, near the low\n"
-                f"Watching for a long. Not an order\n"
+                f"🟢 <b>WATCHING LONG</b> {symbol}\n"
+                f"Down <b>{abs(day_change):.1f}%</b> today, price {price:.6g}\n"
+                f"Day low {day_low:.6g}. Still near the low\n"
+                f"Same idea as a watch call. Not an order\n"
                 f"{chart_link(symbol)}"
             )
 
@@ -224,7 +224,7 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
 
 def main() -> None:
     log.info("Starting setup alerts")
-    send_telegram("Setup bot is running. Watching 5% dumps and pumps, 2% on BTC.")
+    send_telegram("Setup bot is running. Watching coins up 8% at the high, or down 8% at the low.")
     last_beat = time.time()
     while True:
         try:
@@ -251,10 +251,11 @@ def main() -> None:
                     volume = float(row.get("quoteVol") or 0)
                     day_high = float(row.get("high") or 0)
                     day_low = float(row.get("low") or 0)
+                    day_open = float(row.get("open") or 0)
                 except (TypeError, ValueError):
                     continue
                 if price > 0 and volume >= MIN_VOLUME_USDT:
-                    check(symbol, price, now, day_high, day_low)
+                    check(symbol, price, now, day_high, day_low, day_open)
         except Exception as exc:
             log.error("Ticker fetch failed: %s", exc)
         time.sleep(POLL_INTERVAL)
