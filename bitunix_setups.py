@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Failed-move setup alerts. These are not orders."""
+"""Failed-move setup alerts, plus held/dead follow-ups. These are not orders."""
 
 import logging
 import os
@@ -12,11 +12,16 @@ from market_filters import allowed, chart_link
 
 POLL_INTERVAL = 10
 WINDOW_SECONDS = 15 * 60
+FRESH_SECONDS = 3 * 60
 MOVE_PCT = 2.0
 REJECT_PCT = 0.8
+TOUCH_PCT = 0.25
+HELD_PCT = 1.0
+MAX_SPREAD_PCT = 0.3
 COOLDOWN_SECONDS = 600
 MIN_VOLUME_USDT = 200000
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
+DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -28,7 +33,11 @@ log = logging.getLogger("bitunix-setup")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 history = defaultdict(lambda: deque(maxlen=200))
+touches = defaultdict(int)
+last_touch = {}
 last_alert = {}
+open_setups = {}
+scorecard = {"held": 0, "dead": 0}
 
 
 def send_telegram(text: str) -> None:
@@ -50,11 +59,78 @@ def send_telegram(text: str) -> None:
         log.error("Telegram send failed: %s", exc)
 
 
+def spread_ok(symbol: str) -> bool:
+    try:
+        book = requests.get(
+            DEPTH_URL, params={"symbol": symbol, "limit": "1"}, timeout=8
+        ).json().get("data") or {}
+        ask = float(book["asks"][0][0])
+        bid = float(book["bids"][0][0])
+    except (KeyError, IndexError, TypeError, ValueError, requests.RequestException):
+        return False
+    if bid <= 0 or ask < bid:
+        return False
+    return (ask - bid) / bid * 100 <= MAX_SPREAD_PCT
+
+
+def record(symbol: str, result: str) -> None:
+    scorecard[result] += 1
+    log.warning(
+        "SCORE %s %s held=%s dead=%s",
+        result.upper(),
+        symbol,
+        scorecard["held"],
+        scorecard["dead"],
+    )
+
+
+def follow_up(symbol: str, price: float) -> None:
+    setup = open_setups.get(symbol)
+    if not setup:
+        return
+    entry = setup["entry"]
+    invalid = setup["invalid"]
+    if setup["side"] == "short":
+        dead = price > invalid
+        held = price <= entry * (1 - HELD_PCT / 100)
+    else:
+        dead = price < invalid
+        held = price >= entry * (1 + HELD_PCT / 100)
+    if not dead and not held:
+        return
+    result = "dead" if dead else "held"
+    record(symbol, result)
+    title = "SETUP DEAD" if dead else "SETUP HELD"
+    msg = (
+        f"<b>{title}</b> {symbol}\n"
+        f"{'Invalidation hit' if dead else f'Moved {HELD_PCT:.0f}% before invalidation'}\n"
+        f"Price: {price:.6g}\n"
+        f"Scorecard: held {scorecard['held']} / dead {scorecard['dead']}\n"
+        f"{chart_link(symbol)}"
+    )
+    send_telegram(msg)
+    open_setups.pop(symbol, None)
+
+
+def note_touch(symbol: str, extreme: float, price: float, now: float) -> None:
+    near = abs(price - extreme) / extreme * 100 <= TOUCH_PCT
+    if near:
+        last_touch[symbol] = now
+        return
+    touched = last_touch.get(symbol)
+    if touched and abs(price - extreme) / extreme * 100 >= REJECT_PCT / 2:
+        touches[symbol] += 1
+        last_touch.pop(symbol, None)
+
+
 def check(symbol: str, price: float, now: float) -> None:
+    follow_up(symbol, price)
     rows = history[symbol]
     rows.append((now, price))
     window = [item for item in rows if now - item[0] <= WINDOW_SECONDS]
-    if len(window) < 6 or now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
+    if len(window) < 8 or symbol in open_setups:
+        return
+    if now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
         return
 
     high_i = max(range(len(window)), key=lambda i: window[i][1])
@@ -66,40 +142,46 @@ def check(symbol: str, price: float, now: float) -> None:
 
     prior_low = min((item[1] for item in window[: high_i + 1]), default=None)
     prior_high = max((item[1] for item in window[: low_i + 1]), default=None)
-
     short_ready = (
         prior_low
-        and high_time >= low_time
+        and now - high_time <= FRESH_SECONDS
         and (high - prior_low) / prior_low * 100 >= MOVE_PCT
         and (high - price) / high * 100 >= REJECT_PCT
-        and price < high
     )
     long_ready = (
         prior_high
-        and low_time >= high_time
+        and now - low_time <= FRESH_SECONDS
         and (prior_high - low) / prior_high * 100 >= MOVE_PCT
         and (price - low) / low * 100 >= REJECT_PCT
-        and price > low
     )
-    if not short_ready and not long_ready:
+    if short_ready:
+        note_touch(symbol, high, price, now)
+    elif long_ready:
+        note_touch(symbol, low, price, now)
+    else:
+        return
+    if touches[symbol] < 2 or not spread_ok(symbol):
         return
 
     last_alert[symbol] = now
+    touches[symbol] = 0
     if short_ready:
+        open_setups[symbol] = {"side": "short", "entry": price, "invalid": high}
         msg = (
             f"🟠 <b>SHORT WATCH</b> {symbol}\n"
             f"Price: <b>{price:.6g}</b>\n"
             f"Invalid if it trades back above <b>{high:.6g}</b>\n"
-            f"Reason: {((high - prior_low) / prior_low * 100):.1f}% spike failed\n"
+            f"Reason: second rejection after a {((high - prior_low) / prior_low * 100):.1f}% spike\n"
             f"Not an order\n"
             f"{chart_link(symbol)}"
         )
     else:
+        open_setups[symbol] = {"side": "long", "entry": price, "invalid": low}
         msg = (
             f"🟢 <b>LONG WATCH</b> {symbol}\n"
             f"Price: <b>{price:.6g}</b>\n"
             f"Invalid if it trades back below <b>{low:.6g}</b>\n"
-            f"Reason: {((prior_high - low) / prior_high * 100):.1f}% drop failed\n"
+            f"Reason: second hold after a {((prior_high - low) / prior_high * 100):.1f}% drop\n"
             f"Not an order\n"
             f"{chart_link(symbol)}"
         )
