@@ -8,6 +8,7 @@ from collections import defaultdict, deque
 
 import requests
 
+from market_context import note_btc, score as context_score
 from market_filters import allowed, chart_link, strength
 
 POLL_INTERVAL = 5
@@ -63,15 +64,24 @@ def check(symbol: str, price: float, now: float) -> None:
         return
     last_alert[symbol] = now
     elapsed = now - old_time
+    side = "spike" if change > 0 else "drop"
+    points, reasons, with_btc = context_score(symbol, side, window_seconds=elapsed)
     label = strength(change)
+    if points >= 2 and not with_btc:
+        label = f"{label}  HIGH"
     if change > 0:
         title = f"🟢🟢🟢 <b>SPIKE</b> 🟢🟢🟢  {label}"
     else:
         title = f"🔴🔴🔴 <b>DROP</b> 🔴🔴🔴  {label}"
+    extra = "\n".join(f"• {item}" for item in reasons)
+    if with_btc:
+        extra = (extra + "\n" if extra else "") + "WITH BTC"
     msg = (
         f"{title}\n"
         f"<b>{symbol}</b>  <b>{change:+.2f}%</b> in {elapsed:.0f}s\n"
         f"{old_price:.6g} → {price:.6g}\n"
+        + (extra + "\n" if extra else "")
+        + f"Confidence checks: {points}\n"
         f"{chart_link(symbol)}"
     )
     log.warning("%s %s %.2f%%", label, symbol, change)
@@ -94,6 +104,8 @@ def main() -> None:
                 except (TypeError, ValueError):
                     continue
                 if price > 0 and volume >= MIN_VOLUME_USDT:
+                    if symbol == "BTCUSDT":
+                        note_btc(price, now)
                     check(symbol, price, now)
         except Exception as exc:
             log.error("Ticker fetch failed: %s", exc)
