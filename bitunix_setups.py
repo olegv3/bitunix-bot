@@ -191,10 +191,24 @@ def check(symbol: str, price: float, now: float) -> None:
 
 def main() -> None:
     log.info("Starting setup alerts")
+    send_telegram("Setup bot is running. Watching for failed spikes and drops.")
+    last_beat = time.time()
     while True:
         try:
             rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
             now = time.time()
+            if now - last_beat >= 1800:
+                log.info(
+                    "Setup heartbeat open=%s held=%s dead=%s",
+                    len(open_setups),
+                    scorecard["held"],
+                    scorecard["dead"],
+                )
+                send_telegram(
+                    f"Setup bot alive. Open {len(open_setups)}. "
+                    f"Held {scorecard['held']} / dead {scorecard['dead']}."
+                )
+                last_beat = now
             for row in rows:
                 symbol = row.get("symbol")
                 if not symbol or not allowed(symbol):
