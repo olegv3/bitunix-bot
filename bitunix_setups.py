@@ -11,9 +11,10 @@ import requests
 from market_filters import allowed, chart_link
 
 POLL_INTERVAL = 10
-WINDOW_SECONDS = 15 * 60
-FRESH_SECONDS = 3 * 60
-MOVE_PCT = 2.0
+WINDOW_SECONDS = 30 * 60
+FRESH_SECONDS = 5 * 60
+MOVE_PCT = 5.0
+BTC_MOVE_PCT = 2.0
 REJECT_PCT = 0.8
 TOUCH_PCT = 0.25
 HELD_PCT = 1.0
@@ -32,10 +33,11 @@ log = logging.getLogger("bitunix-setup")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-history = defaultdict(lambda: deque(maxlen=200))
+history = defaultdict(lambda: deque(maxlen=400))
 touches = defaultdict(int)
 last_touch = {}
 last_alert = {}
+last_candidate = {}
 open_setups = {}
 scorecard = {"held": 0, "dead": 0}
 
@@ -123,14 +125,16 @@ def note_touch(symbol: str, extreme: float, price: float, now: float) -> None:
         last_touch.pop(symbol, None)
 
 
+def move_needed(symbol: str) -> float:
+    return BTC_MOVE_PCT if symbol == "BTCUSDT" else MOVE_PCT
+
+
 def check(symbol: str, price: float, now: float) -> None:
     follow_up(symbol, price)
     rows = history[symbol]
     rows.append((now, price))
     window = [item for item in rows if now - item[0] <= WINDOW_SECONDS]
     if len(window) < 8 or symbol in open_setups:
-        return
-    if now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
         return
 
     high_i = max(range(len(window)), key=lambda i: window[i][1])
@@ -140,18 +144,43 @@ def check(symbol: str, price: float, now: float) -> None:
     if high <= 0 or low <= 0:
         return
 
+    needed = move_needed(symbol)
+    dump = (high - price) / high * 100
+    pump = (price - low) / low * 100
+    if now - last_candidate.get(symbol, 0) >= COOLDOWN_SECONDS:
+        if dump >= needed and now - low_time <= FRESH_SECONDS:
+            last_candidate[symbol] = now
+            send_telegram(
+                f"📉 <b>DUMPING</b> {symbol}\n"
+                f"Down <b>{dump:.1f}%</b> from {high:.6g} in 30m\n"
+                f"Price: {price:.6g}\n"
+                f"Watching for a bounce. Not an order\n"
+                f"{chart_link(symbol)}"
+            )
+        elif pump >= needed and now - high_time <= FRESH_SECONDS:
+            last_candidate[symbol] = now
+            send_telegram(
+                f"📈 <b>PUMPING</b> {symbol}\n"
+                f"Up <b>{pump:.1f}%</b> from {low:.6g} in 30m\n"
+                f"Price: {price:.6g}\n"
+                f"Watching for a stall. Not an order\n"
+                f"{chart_link(symbol)}"
+            )
+
+    if now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
+        return
     prior_low = min((item[1] for item in window[: high_i + 1]), default=None)
     prior_high = max((item[1] for item in window[: low_i + 1]), default=None)
     short_ready = (
         prior_low
         and now - high_time <= FRESH_SECONDS
-        and (high - prior_low) / prior_low * 100 >= MOVE_PCT
+        and (high - prior_low) / prior_low * 100 >= needed
         and (high - price) / high * 100 >= REJECT_PCT
     )
     long_ready = (
         prior_high
         and now - low_time <= FRESH_SECONDS
-        and (prior_high - low) / prior_high * 100 >= MOVE_PCT
+        and (prior_high - low) / prior_high * 100 >= needed
         and (price - low) / low * 100 >= REJECT_PCT
     )
     if short_ready:
@@ -191,7 +220,7 @@ def check(symbol: str, price: float, now: float) -> None:
 
 def main() -> None:
     log.info("Starting setup alerts")
-    send_telegram("Setup bot is running. Watching for failed spikes and drops.")
+    send_telegram("Setup bot is running. Watching 5% dumps and pumps, 2% on BTC.")
     last_beat = time.time()
     while True:
         try:
