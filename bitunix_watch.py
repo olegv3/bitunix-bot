@@ -150,7 +150,7 @@ def check_symbol(symbol: str, now: float) -> None:
             )
             + extra
             + f"\nConfidence checks: {points}\n"
-            + f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
+            + chart_link(symbol)
         )
     else:
         ask_share = None if bid_share is None else 1 - bid_share
@@ -164,7 +164,7 @@ def check_symbol(symbol: str, now: float) -> None:
             )
             + extra
             + f"\nConfidence checks: {points}\n"
-            + f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
+            + chart_link(symbol)
         )
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
