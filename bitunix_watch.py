@@ -17,12 +17,12 @@ import requests
 from websocket import WebSocketApp
 
 # ====================== CONFIG ======================
-MIN_VOLUME_USDT = 200000      # skip dead pairs
+MIN_VOLUME_USDT = 500000      # skip thinner pairs
 WINDOW_SECONDS = 8
-MIN_NOTIONAL = 8000           # burst size required before a WATCH alert
-IMBALANCE = 0.72
-BOOK_IMBALANCE = 0.65
-COOLDOWN_SECONDS = 60
+MIN_NOTIONAL = 40000          # burst size required before a WATCH alert
+IMBALANCE = 0.85              # 85% of recent notional on one side
+BOOK_IMBALANCE = 0.75         # top-of-book must agree
+COOLDOWN_SECONDS = 180
 DEPTH_CHANNEL = "depth_book5"
 PAIRS_PER_CONNECTION = 120    # 120 x 2 channels = 240, under the 300 cap
 WS_URL = "wss://fapi.bitunix.com/public/"
@@ -119,14 +119,22 @@ def check_symbol(symbol: str, now: float) -> None:
     sell_share = sell / total
     bid_share, bid_notional, ask_notional = book_ratio(symbol)
 
+    # Book must agree. A missing book is not confident enough.
+    if bid_share is None:
+        return
     side = None
-    if buy_share >= IMBALANCE and (bid_share is None or bid_share >= BOOK_IMBALANCE):
+    if buy_share >= IMBALANCE and bid_share >= BOOK_IMBALANCE:
         side = "spike"
-    elif sell_share >= IMBALANCE and (bid_share is None or bid_share <= 1 - BOOK_IMBALANCE):
+    elif sell_share >= IMBALANCE and bid_share <= 1 - BOOK_IMBALANCE:
         side = "drop"
     if not side or now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
         return
+    points, reasons = context_score(symbol, side, total)
+    # Flow and book already agreed. Require at least one extra check.
+    if points < 1:
+        return
     last_alert[symbol] = now
+    extra = "\n".join(f"• {item}" for item in reasons)
 
     if side == "spike":
         msg = (
@@ -137,7 +145,8 @@ def check_symbol(symbol: str, now: float) -> None:
                 if bid_share is not None
                 else ""
             )
-            + "Early guess, not a confirmed move"
+            + extra
+            + f"\nConfidence checks: {points}"
         )
     else:
         ask_share = None if bid_share is None else 1 - bid_share
@@ -149,7 +158,8 @@ def check_symbol(symbol: str, now: float) -> None:
                 if ask_share is not None
                 else ""
             )
-            + "Early guess, not a confirmed move"
+            + extra
+            + f"\nConfidence checks: {points}"
         )
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
