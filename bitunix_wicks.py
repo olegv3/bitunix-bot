@@ -110,11 +110,13 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
     if not side or now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
         return
     context_side = "drop" if side == "upper" else "spike"
-    points, reasons = context_score(symbol, context_side)
+    points, reasons, with_btc = context_score(symbol, context_side, window_seconds=60)
     if points < 1:
         return
     last_alert[symbol] = now
     extra = "\n".join(f"• {item}" for item in reasons)
+    if with_btc:
+        extra = (extra + "\n" if extra else "") + "WITH BTC"
 
     label = strength(range_pct)
     if side == "upper":
