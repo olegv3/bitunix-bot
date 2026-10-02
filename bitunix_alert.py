@@ -12,7 +12,7 @@ from market_filters import allowed, chart_link, strength
 
 POLL_INTERVAL = 5
 LOOKBACK_SECONDS = 10
-THRESHOLD_PCT = 1.0
+THRESHOLD_PCT = 2.0
 MIN_VOLUME_USDT = 200000
 COOLDOWN_SECONDS = 60
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
@@ -72,7 +72,7 @@ def check(symbol: str, price: float, now: float) -> None:
         f"{title}\n"
         f"<b>{symbol}</b>  <b>{change:+.2f}%</b> in {elapsed:.0f}s\n"
         f"{old_price:.6g} → {price:.6g}\n"
-        f"<a href=\"{chart_link(symbol)}\">Open chart</a>"
+        f"{chart_link(symbol)}"
     )
     log.warning("%s %s %.2f%%", label, symbol, change)
     send_telegram(msg)
