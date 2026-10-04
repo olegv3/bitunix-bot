@@ -19,7 +19,7 @@ REJECT_PCT = 0.8
 TOUCH_PCT = 0.25
 HELD_PCT = 1.0
 MAX_SPREAD_PCT = 0.3
-COOLDOWN_SECONDS = 600
+COOLDOWN_SECONDS = 1800
 MIN_VOLUME_USDT = 200000
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
@@ -152,7 +152,7 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
     pump = (price - low) / low * 100 if low else 0
     dump = (high - price) / high * 100 if high else 0
     if now - last_candidate.get(symbol, 0) >= COOLDOWN_SECONDS:
-        if (near_high and day_change >= 8) or (pump >= needed and now - high_time <= FRESH_SECONDS):
+        if near_high and day_change >= 8:
             last_candidate[symbol] = now
             log.warning(
                 "WATCHING SHORT %s day %+.1f%% price %s high %s",
@@ -165,7 +165,7 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
                 f"Same idea as a watch call. Not an order\n"
                 f"{chart_link(symbol)}"
             )
-        elif (near_low and day_change <= -8) or (dump >= needed and now - low_time <= FRESH_SECONDS):
+        elif near_low and day_change <= -8:
             last_candidate[symbol] = now
             log.warning(
                 "WATCHING LONG %s day %+.1f%% price %s low %s",
