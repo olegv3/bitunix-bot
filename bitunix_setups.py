@@ -154,6 +154,10 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
     if now - last_candidate.get(symbol, 0) >= COOLDOWN_SECONDS:
         if (near_high and day_change >= 8) or (pump >= needed and now - high_time <= FRESH_SECONDS):
             last_candidate[symbol] = now
+            log.warning(
+                "WATCHING SHORT %s day %+.1f%% price %s high %s",
+                symbol, day_change, price, day_high,
+            )
             send_telegram(
                 f"🟠 <b>WATCHING SHORT</b> {symbol}\n"
                 f"Up <b>{day_change:.1f}%</b> today, price {price:.6g}\n"
@@ -163,6 +167,10 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
             )
         elif (near_low and day_change <= -8) or (dump >= needed and now - low_time <= FRESH_SECONDS):
             last_candidate[symbol] = now
+            log.warning(
+                "WATCHING LONG %s day %+.1f%% price %s low %s",
+                symbol, day_change, price, day_low,
+            )
             send_telegram(
                 f"🟢 <b>WATCHING LONG</b> {symbol}\n"
                 f"Down <b>{abs(day_change):.1f}%</b> today, price {price:.6g}\n"
