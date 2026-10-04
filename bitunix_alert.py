@@ -29,6 +29,8 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 history = defaultdict(lambda: deque(maxlen=200))
 last_alert = {}
+pending_long = {}
+ENTRY_WAIT_SECONDS = 180
 
 
 def send_telegram(text: str) -> None:
@@ -88,6 +90,30 @@ def check(symbol: str, price: float, now: float) -> None:
     if "HIGH" not in label:
         return
     send_telegram(msg)
+    if change <= -4:
+        pending_long[symbol] = {"price": price, "at": now, "change": change}
+
+
+def follow_longs(now: float, prices: dict) -> None:
+    for symbol, item in list(pending_long.items()):
+        if now - item["at"] < ENTRY_WAIT_SECONDS:
+            continue
+        pending_long.pop(symbol, None)
+        price = prices.get(symbol)
+        if not price or item["price"] <= 0:
+            continue
+        bounce = (price - item["price"]) / item["price"] * 100
+        if bounce >= 1:
+            log.info("Skip late long %s, already %+.2f%%", symbol, bounce)
+            continue
+        send_telegram(
+            f"🟢 <b>LATE LONG</b> {symbol}\n"
+            f"Drop was {item['change']:+.1f}% at {item['price']:.6g}\n"
+            f"3 minutes later: <b>{price:.6g}</b> ({bounce:+.2f}%)\n"
+            f"Still near the low. Not an order\n"
+            f"{chart_link(symbol)}"
+        )
+        log.warning("LATE LONG %s %+.2f%%", symbol, bounce)
 
 
 def main() -> None:
@@ -96,6 +122,7 @@ def main() -> None:
         try:
             rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
             now = time.time()
+            prices = {}
             for row in rows:
                 symbol = row.get("symbol")
                 if not symbol or not allowed(symbol):
@@ -106,9 +133,11 @@ def main() -> None:
                 except (TypeError, ValueError):
                     continue
                 if price > 0 and volume >= MIN_VOLUME_USDT:
+                    prices[symbol] = price
                     if symbol == "BTCUSDT":
                         note_btc(price, now)
                     check(symbol, price, now)
+            follow_longs(now, prices)
         except Exception as exc:
             log.error("Ticker fetch failed: %s", exc)
         time.sleep(POLL_INTERVAL)
