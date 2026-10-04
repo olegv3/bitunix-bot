@@ -87,11 +87,10 @@ def check(symbol: str, price: float, now: float) -> None:
         f"{chart_link(symbol)}"
     )
     log.warning("%s %s %.2f%%", label, symbol, change)
-    if "HIGH" not in label:
+    if change > -4 or "HIGH" not in label:
         return
     send_telegram(msg)
-    if change <= -4:
-        pending_long[symbol] = {"price": price, "at": now, "change": change}
+    pending_long[symbol] = {"price": price, "at": now, "change": change}
 
 
 def follow_longs(now: float, prices: dict) -> None:
