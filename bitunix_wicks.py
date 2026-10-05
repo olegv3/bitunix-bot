@@ -1,26 +1,28 @@
 #!/usr/bin/env python3
-"""
-1-minute wick alerts for liquid Bitunix futures pairs.
+"""1-minute wick alerts for liquid Bitunix futures pairs.
 
 Upper wick = rejection after a push up (possible short watch).
 Lower wick = rejection after a push down (possible bounce watch).
-This does not replace the confirmed spike/drop bot.
+Candles are fetched in a small thread pool so a full pass is not one-symbol-at-a-time.
 """
 
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
+from bot_common import emit_signal, file_logger
 from market_context import score as context_score
 from market_filters import allowed, chart_link, strength, ta_snapshot
 
 MIN_VOLUME_USDT = 200000
-MIN_RANGE_PCT = 1.5          # ignore small candles
-WICK_TO_BODY = 2.5           # wick must be at least 2.5x the body
-WICK_SHARE = 0.60            # wick must be at least 60% of the whole candle
+MIN_RANGE_PCT = 1.5
+WICK_TO_BODY = 2.5
+WICK_SHARE = 0.60
 COOLDOWN_SECONDS = 60
+WORKERS = 8
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
@@ -30,6 +32,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("bitunix-wick")
+file_logger("bitunix-wick")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -113,6 +116,9 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
     points, reasons, with_btc = context_score(symbol, context_side, window_seconds=60)
     if points < 1:
         return
+    trade_side = "short" if side == "upper" else "long"
+    if not emit_signal("wick", symbol, trade_side, close, 1.2, 2.0, side):
+        return
     last_alert[symbol] = now
     extra = "\n".join(f"• {item}" for item in reasons)
     if with_btc:
@@ -142,20 +148,26 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
     send_telegram(msg)
 
 
+def scan_one(symbol: str) -> None:
+    now = time.time()
+    try:
+        candle = latest_candle(symbol)
+        if candle:
+            check_wick(symbol, candle, now)
+    except Exception as exc:
+        log.error("%s kline failed: %s", symbol, exc)
+
+
 def main() -> None:
     symbols = load_symbols()
-    log.info("Scanning %s pairs for 1m wicks", len(symbols))
-    while True:
-        for symbol in symbols:
-            now = time.time()
-            try:
-                candle = latest_candle(symbol)
-                if candle:
-                    check_wick(symbol, candle, now)
-            except Exception as exc:
-                log.error("%s kline failed: %s", symbol, exc)
-            time.sleep(0.12)  # stay under 10 requests/second
-        log.info("Finished a wick pass")
+    log.info("Scanning %s pairs for 1m wicks with %s workers", len(symbols), WORKERS)
+    send_telegram("Wick bot is running. 1-minute rejection wicks are paper-tracked. Not an order.")
+    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
+        while True:
+            list(pool.map(scan_one, symbols))
+            log.info("Finished a wick pass over %s pairs", len(symbols))
+            symbols = load_symbols()
+            time.sleep(2)
 
 
 if __name__ == "__main__":

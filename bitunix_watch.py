@@ -16,24 +16,23 @@ from collections import defaultdict, deque
 import requests
 from websocket import WebSocketApp
 
+from bot_common import emit_signal, file_logger
 from market_context import note_btc, score as context_score
 from market_filters import allowed, chart_link
 
-# ====================== CONFIG ======================
-MIN_VOLUME_USDT = 200000      # skip thinner pairs
+MIN_VOLUME_USDT = 200000
 WINDOW_SECONDS = 8
-MIN_NOTIONAL = 40000          # burst size required before a WATCH alert
-IMBALANCE = 0.85              # 85% of recent notional on one side
-BOOK_IMBALANCE = 0.75         # top-of-book must agree
+MIN_NOTIONAL = 40000
+IMBALANCE = 0.85
+BOOK_IMBALANCE = 0.75
 COOLDOWN_SECONDS = 60
 FOLLOW_PCT = 0.6
 FOLLOW_SECONDS = 30
 PERSIST_SECONDS = 8
 DEPTH_CHANNEL = "depth_book5"
-PAIRS_PER_CONNECTION = 120    # 120 x 2 channels = 240, under the 300 cap
+PAIRS_PER_CONNECTION = 120
 WS_URL = "wss://fapi.bitunix.com/public/"
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
-# ====================================================
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,6 +40,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("bitunix-watch")
+file_logger("bitunix-watch")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -184,6 +184,10 @@ def send_watch(symbol: str, state: dict, move: float, now: float) -> None:
     points, reasons, with_btc = context_score(symbol, side, ev["total"], FOLLOW_SECONDS)
     if points < 1 or with_btc:
         return
+    price = last_prices.get(symbol) or state.get("price") or 0
+    trade_side = "long" if side == "spike" else "short"
+    if not price or not emit_signal("watch", symbol, trade_side, price, 1.2, 2.0, f"follow {move:+.2f}%"):
+        return
     last_alert[symbol] = now
     extra = "\n".join(f"• {item}" for item in reasons)
     bid_share = ev["bid_share"]
@@ -243,7 +247,6 @@ def run_connection(symbols: list, index: int) -> None:
         for symbol in symbols:
             args.append({"symbol": symbol, "ch": "trade"})
             args.append({"symbol": symbol, "ch": DEPTH_CHANNEL})
-        # Bitunix allows 5 messages/second. Send in chunks.
         for i in range(0, len(args), 40):
             ws.send(json.dumps({"op": "subscribe", "args": args[i:i + 40]}))
             time.sleep(0.3)
@@ -267,6 +270,7 @@ def main() -> None:
     symbols = load_symbols()
     if not symbols:
         raise SystemExit("No symbols returned. Check the tickers endpoint.")
+    send_telegram("Watch bot is running. Follow-through alerts are paper-tracked. Not an order.")
     chunks = [
         symbols[i:i + PAIRS_PER_CONNECTION]
         for i in range(0, len(symbols), PAIRS_PER_CONNECTION)
