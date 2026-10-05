@@ -14,7 +14,7 @@ import time
 import requests
 
 from market_context import score as context_score
-from market_filters import allowed, chart_link, strength
+from market_filters import allowed, chart_link, strength, ta_snapshot
 
 MIN_VOLUME_USDT = 200000
 MIN_RANGE_PCT = 1.5          # ignore small candles
@@ -135,6 +135,9 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
             f"{extra}\nConfidence checks: {points}\n"
             f"{chart_link(symbol)}"
         )
+    note = ta_snapshot(symbol, close)
+    if note:
+        msg += "\n" + note
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
 
