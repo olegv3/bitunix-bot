@@ -29,7 +29,7 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 history = defaultdict(lambda: deque(maxlen=200))
 last_alert = {}
-pending_long = {}
+pending = {}
 ENTRY_WAIT_SECONDS = 180
 
 
@@ -87,32 +87,45 @@ def check(symbol: str, price: float, now: float) -> None:
         f"{chart_link(symbol)}"
     )
     log.warning("%s %s %.2f%%", label, symbol, change)
-    if change > -4 or "HIGH" not in label:
+    if "HIGH" not in label or abs(change) < 4:
         return
-    send_telegram(msg)
-    pending_long[symbol] = {"price": price, "at": now, "change": change}
+    if change < 0:
+        send_telegram(msg)
+    pending[symbol] = {"side": "long" if change < 0 else "short", "price": price, "at": now, "change": change}
 
 
-def follow_longs(now: float, prices: dict) -> None:
-    for symbol, item in list(pending_long.items()):
+def follow_entries(now: float, prices: dict) -> None:
+    for symbol, item in list(pending.items()):
         if now - item["at"] < ENTRY_WAIT_SECONDS:
             continue
-        pending_long.pop(symbol, None)
+        pending.pop(symbol, None)
         price = prices.get(symbol)
         if not price or item["price"] <= 0:
             continue
-        bounce = (price - item["price"]) / item["price"] * 100
-        if bounce >= 1:
-            log.info("Skip late long %s, already %+.2f%%", symbol, bounce)
+        move = (price - item["price"]) / item["price"] * 100
+        if item["side"] == "long" and move > -0.3:
+            log.info("Skip late long %s, only %+.2f%%", symbol, move)
             continue
-        send_telegram(
-            f"🟢 <b>LATE LONG</b> {symbol}\n"
-            f"Drop was {item['change']:+.1f}% at {item['price']:.6g}\n"
-            f"3 minutes later: <b>{price:.6g}</b> ({bounce:+.2f}%)\n"
-            f"Still near the low. Not an order\n"
-            f"{chart_link(symbol)}"
-        )
-        log.warning("LATE LONG %s %+.2f%%", symbol, bounce)
+        if item["side"] == "short" and move < 0.3:
+            log.info("Skip late short %s, only %+.2f%%", symbol, move)
+            continue
+        if item["side"] == "long":
+            send_telegram(
+                f"🟢 <b>LATE LONG</b> {symbol}\n"
+                f"Drop was {item['change']:+.1f}% at {item['price']:.6g}\n"
+                f"3 minutes later, lower: <b>{price:.6g}</b> ({move:+.2f}%)\n"
+                f"Not an order\n"
+                f"{chart_link(symbol)}"
+            )
+        else:
+            send_telegram(
+                f"🔴 <b>LATE SHORT</b> {symbol}\n"
+                f"Spike was {item['change']:+.1f}% at {item['price']:.6g}\n"
+                f"3 minutes later, higher: <b>{price:.6g}</b> ({move:+.2f}%)\n"
+                f"Not an order\n"
+                f"{chart_link(symbol)}"
+            )
+        log.warning("LATE %s %s %+.2f%%", item["side"].upper(), symbol, move)
 
 
 def main() -> None:
@@ -136,7 +149,7 @@ def main() -> None:
                     if symbol == "BTCUSDT":
                         note_btc(price, now)
                     check(symbol, price, now)
-            follow_longs(now, prices)
+            follow_entries(now, prices)
         except Exception as exc:
             log.error("Ticker fetch failed: %s", exc)
         time.sleep(POLL_INTERVAL)
