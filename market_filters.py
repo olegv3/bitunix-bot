@@ -3,7 +3,7 @@
 STOCK_BASES = {
     "AAPL", "AMD", "AMZN", "AVGO", "BABA", "COIN", "DIS", "GOOGL", "META",
     "MSFT", "MSTR", "NFLX", "NVDA", "TSLA", "XOM", "TWST", "KSTR", "MVLL",
-    "XBI", "SPY", "QQQ", "IWM", "INTC", "PLTR", "SMCI", "ARM", "HOOD",
+    "XBI", "SPY", "QQQ", "IWM", "EWZ", "INTC", "PLTR", "SMCI", "ARM", "HOOD",
     "UBER", "PYPL", "BA", "JPM", "GS", "BAC", "WMT", "COST", "NKE",
     "ORCL", "CRM", "ADBE", "QCOM", "MU", "TSM", "ASML", "SHOP", "SQ",
     "RIVN", "LCID", "GME", "AMC", "DKNG", "ABNB", "SNOW", "NET", "CRWD",
