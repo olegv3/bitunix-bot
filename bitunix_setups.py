@@ -21,8 +21,12 @@ HELD_PCT = 1.0
 MAX_SPREAD_PCT = 0.3
 COOLDOWN_SECONDS = 1800
 MIN_VOLUME_USDT = 200000
+# 8% intraday move is only meaningful if it is extreme vs the recent multi-day range.
+BASELINE_DAYS = 7
+EXTREME_VS_BASELINE = 1.5  # intraday move must be >= 1.5x the 7-day range
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
+KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -35,11 +39,12 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 history = defaultdict(lambda: deque(maxlen=400))
 touches = defaultdict(int)
-last_touch = {}
-last_alert = {}
-last_candidate = {}
-open_setups = {}
+last_touch = defaultdict(float)
+last_alert = defaultdict(float)
+last_candidate = defaultdict(float)
+open_setups = defaultdict(dict)
 scorecard = {"held": 0, "dead": 0}
+baseline_cache = {}  # symbol -> (fetched_at, range_pct)
 
 
 def send_telegram(text: str) -> None:
@@ -129,6 +134,39 @@ def move_needed(symbol: str) -> float:
     return BTC_MOVE_PCT if symbol == "BTCUSDT" else MOVE_PCT
 
 
+def baseline_range(symbol: str, now: float) -> float | None:
+    """7-day high-to-low range as a percent of the low. Cached for 6 hours."""
+    cached = baseline_cache.get(symbol)
+    if cached and now - cached[0] < 6 * 60 * 60:
+        return cached[1]
+    try:
+        candles = requests.get(
+            KLINE_URL,
+            params={"symbol": symbol, "interval": "1d", "limit": BASELINE_DAYS + 1},
+            timeout=12,
+        ).json().get("data") or []
+        candles = sorted(candles, key=lambda item: int(item.get("time") or 0))
+        if len(candles) < 2:
+            return None
+        highs = [float(item["high"]) for item in candles]
+        lows = [float(item["low"]) for item in candles]
+        hi, lo = max(highs), min(lows)
+        if lo <= 0:
+            return None
+        rng = (hi - lo) / lo * 100
+        baseline_cache[symbol] = (now, rng)
+        return rng
+    except (TypeError, ValueError, requests.RequestException):
+        return None
+
+
+def extreme_vs_baseline(intraday_move: float, range_pct: float | None) -> bool:
+    """True if the intraday move is at least EXTREME_VS_BASELINE times the 7-day range."""
+    if range_pct is None or range_pct <= 0:
+        return False
+    return intraday_move >= range_pct * EXTREME_VS_BASELINE
+
+
 def check(symbol: str, price: float, now: float, day_high: float, day_low: float, day_open: float) -> None:
     follow_up(symbol, price)
     rows = history[symbol]
@@ -151,31 +189,35 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
     near_low = day_low and (price - day_low) / day_low * 100 <= 1.5
     pump = (price - low) / low * 100 if low else 0
     dump = (high - price) / high * 100 if high else 0
+    rng = baseline_range(symbol, now)
+
     if now - last_candidate.get(symbol, 0) >= COOLDOWN_SECONDS:
-        if near_high and day_change >= 8:
+        if near_high and day_change >= 8 and extreme_vs_baseline(day_change, rng):
             last_candidate[symbol] = now
             log.warning(
-                "WATCHING SHORT %s day %+.1f%% price %s high %s",
-                symbol, day_change, price, day_high,
+                "WATCHING SHORT %s day %+.1f%% price %s high %s 7d-range %.1f%%",
+                symbol, day_change, price, day_high, rng if rng is not None else -1,
             )
             send_telegram(
                 f"🟠 <b>WATCHING SHORT</b> {symbol}\n"
                 f"Up <b>{day_change:.1f}%</b> today, price {price:.6g}\n"
                 f"Day high {day_high:.6g}. Still near the high\n"
+                f"7-day range {rng:.1f}% — today's move is {day_change / rng:.1f}x that\n"
                 f"Same idea as a watch call. Not an order\n"
                 f"{chart_link(symbol)}\n"
                 f"{ta_snapshot(symbol, price)}"
             )
-        elif near_low and day_change <= -8:
+        elif near_low and day_change <= -8 and extreme_vs_baseline(abs(day_change), rng):
             last_candidate[symbol] = now
             log.warning(
-                "WATCHING LONG %s day %+.1f%% price %s low %s",
-                symbol, day_change, price, day_low,
+                "WATCHING LONG %s day %+.1f%% price %s low %s 7d-range %.1f%%",
+                symbol, day_change, price, day_low, rng if rng is not None else -1,
             )
             send_telegram(
                 f"🟢 <b>WATCHING LONG</b> {symbol}\n"
                 f"Down <b>{abs(day_change):.1f}%</b> today, price {price:.6g}\n"
                 f"Day low {day_low:.6g}. Still near the low\n"
+                f"7-day range {rng:.1f}% — today's move is {abs(day_change) / rng:.1f}x that\n"
                 f"Same idea as a watch call. Not an order\n"
                 f"{chart_link(symbol)}\n"
                 f"{ta_snapshot(symbol, price)}"
@@ -234,7 +276,10 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
 
 def main() -> None:
     log.info("Starting setup alerts")
-    send_telegram("Setup bot is running. Watching coins up 8% at the high, or down 8% at the low.")
+    send_telegram(
+        "Setup bot is running. Watching coins up 8% at the high, or down 8% at the low, "
+        f"only when today's move is at least {EXTREME_VS_BASELINE:.1f}x the {BASELINE_DAYS}-day range."
+    )
     last_beat = time.time()
     while True:
         try:
