@@ -34,6 +34,18 @@ def load_open() -> dict:
         return {}
 
 
+def load_closed() -> list:
+    if not CLOSED_PATH.exists():
+        return []
+    rows = []
+    for line in CLOSED_PATH.read_text(encoding="utf-8").splitlines():
+        try:
+            rows.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+    return rows[-500:]
+
+
 def save_open(rows: dict) -> None:
     ensure_data()
     OPEN_PATH.write_text(json.dumps(rows), encoding="utf-8")
@@ -118,7 +130,8 @@ def main() -> None:
     )
     open_rows = load_open()
     offset = 0
-    closed = []
+    closed = load_closed()
+    log.info("Loaded %s closed paper trades", len(closed))
     last_summary = time.time()
     while True:
         try:
