@@ -11,7 +11,6 @@ which cuts a full pass from minutes to seconds and avoids rate limits.
 """
 
 import logging
-import os
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -23,11 +22,11 @@ from market_filters import allowed, chart_link, strength, ta_snapshot
 from utils import send_telegram, strip_html
 
 MIN_VOLUME_USDT = 200000
-MIN_RANGE_PCT = 1.5          # ignore small candles
-WICK_TO_BODY = 2.5           # wick must be at least 2.5x the body
-WICK_SHARE = 0.60            # wick must be at least 60% of the whole candle
+MIN_RANGE_PCT = 1.5
+WICK_TO_BODY = 2.5
+WICK_SHARE = 0.60
 COOLDOWN_SECONDS = 60
-MAX_WORKERS = 20             # concurrent kline requests
+MAX_WORKERS = 20
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
@@ -61,6 +60,7 @@ def latest_candle(symbol: str):
         timeout=10,
     )
     rows = resp.json().get("data") or []
+    rows = sorted(rows, key=lambda item: int(item.get("time") or 0))
     return rows[-1] if rows else None
 
 
@@ -100,14 +100,14 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
     if points < 1:
         return
     last_alert[symbol] = now
-    extra = "\n".join(f"• {item}" for item in reasons)
+    extra = "\n".join(f"\u2022 {item}" for item in reasons)
     if with_btc:
         extra = (extra + "\n" if extra else "") + "WITH BTC"
 
     label = strength(range_pct)
     if side == "upper":
         msg = (
-            f"🗓️ <b>UPPER WICK</b> {symbol}  {label}\n"
+            f"\U0001f53b <b>UPPER WICK</b> {symbol}  {label}\n"
             f"Rejected high. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
             f"{extra}\nConfidence checks: {points}\n"
@@ -115,7 +115,7 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
         )
     else:
         msg = (
-            f"🔺 <b>LOWER WICK</b> {symbol}  {label}\n"
+            f"\U0001f53a <b>LOWER WICK</b> {symbol}  {label}\n"
             f"Rejected low. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
             f"{extra}\nConfidence checks: {points}\n"
@@ -157,7 +157,6 @@ def main() -> None:
             log.error("Wick pass failed: %s", exc)
         elapsed = time.time() - t0
         log.info("Finished a wick pass in %.1fs", elapsed)
-        # Sleep just enough to land near the top of the next minute candle.
         sleep_for = max(1.0, 60 - (time.time() % 60))
         time.sleep(sleep_for)
 
