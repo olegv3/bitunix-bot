@@ -8,8 +8,10 @@ from collections import defaultdict, deque
 
 import requests
 
+from bot_common import emit_signal, file_logger
 from market_context import note_btc, score as context_score
 from market_filters import allowed, chart_link, strength, ta_snapshot
+from thresholds import late_move_pct
 
 POLL_INTERVAL = 5
 LOOKBACK_SECONDS = 10
@@ -25,6 +27,7 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("bitunix-alert")
+file_logger("bitunix-alert")
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
@@ -93,12 +96,16 @@ def check(symbol: str, price: float, now: float) -> None:
     log.warning("%s %s %.2f%%", label, symbol, change)
     if "HIGH" not in label or abs(change) < 4:
         return
+    trade_side = "long" if change < 0 else "short"
+    if not emit_signal("alert", symbol, trade_side, price, 1.2, 2.0, f"{change:+.2f}%"):
+        return
     if change < 0:
         send_telegram(msg)
-    pending[symbol] = {"side": "long" if change < 0 else "short", "price": price, "at": now, "change": change}
+    pending[symbol] = {"side": trade_side, "price": price, "at": now, "change": change}
 
 
 def follow_entries(now: float, prices: dict) -> None:
+    bar = late_move_pct()
     for symbol, item in list(pending.items()):
         if now - item["at"] < ENTRY_WAIT_SECONDS:
             continue
@@ -107,14 +114,16 @@ def follow_entries(now: float, prices: dict) -> None:
         if not price or item["price"] <= 0:
             continue
         move = (price - item["price"]) / item["price"] * 100
-        if item["side"] == "long" and move > -0.3:
-            log.info("Skip late long %s, only %+.2f%%", symbol, move)
+        if item["side"] == "long" and move > -bar:
+            log.info("Skip late long %s, only %+.2f%% (bar %.2f)", symbol, move, bar)
             continue
-        if item["side"] == "short" and move < 0.3:
-            log.info("Skip late short %s, only %+.2f%%", symbol, move)
+        if item["side"] == "short" and move < bar:
+            log.info("Skip late short %s, only %+.2f%% (bar %.2f)", symbol, move, bar)
             continue
         note = ta_snapshot(symbol, price)
         extra = f"\n{note}" if note else ""
+        if not emit_signal("late", symbol, item["side"], price, 1.2, 2.0, f"after {item['change']:+.1f}%"):
+            continue
         if item["side"] == "long":
             send_telegram(
                 f"🟢 <b>LATE LONG</b> {symbol}\n"
@@ -136,6 +145,7 @@ def follow_entries(now: float, prices: dict) -> None:
 
 def main() -> None:
     log.info("Starting confirmed alert bot, cooldown %ss", COOLDOWN_SECONDS)
+    send_telegram("Alert bot is running. High-confidence drops and late entries are paper-tracked. Not an order.")
     while True:
         try:
             rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
