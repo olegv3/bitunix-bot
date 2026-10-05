@@ -67,21 +67,27 @@ def scan() -> None:
         symbol = row.get("symbol")
         try:
             volume = float(row.get("quoteVol") or 0)
+            live = float(row.get("lastPrice") or row.get("last") or 0)
         except (TypeError, ValueError):
             continue
-        if not symbol or not allowed(symbol) or volume < MIN_VOLUME_USDT:
+        if not symbol or not allowed(symbol) or volume < MIN_VOLUME_USDT or live <= 0:
             continue
         try:
             candles = requests.get(
                 KLINE_URL, params={"symbol": symbol, "interval": "1d", "limit": "220"}, timeout=12
             ).json().get("data") or []
+            candles = sorted(candles, key=lambda item: int(item.get("time") or 0))
             closes = [float(item["close"]) for item in candles]
             lows = [float(item["low"]) for item in candles]
         except (TypeError, ValueError, requests.RequestException):
             continue
-        if len(closes) < 55:
+        if len(closes) < 55 or closes[-1] <= 0:
             continue
-        price = closes[-1]
+        if abs(live - closes[-1]) / closes[-1] > 0.08:
+            log.info("Skip %s, daily close %.6g vs live %.6g", symbol, closes[-1], live)
+            continue
+        price = live
+        closes[-1] = live
         fast20, slow50 = ema(closes, 20), ema(closes, 50)
         value = rsi(closes)
         macd = ema(closes, 12) - ema(closes, 26)
