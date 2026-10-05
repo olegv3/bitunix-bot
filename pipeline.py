@@ -17,12 +17,24 @@ log = logging.getLogger("bitunix-pipeline")
 
 # How long to suppress duplicate alerts for the same symbol (seconds).
 DEDUP_SECONDS = 300
+SIGNAL_DEDUP_SECONDS = 90
 
 # Per-symbol cooldown tracking: symbol -> timestamp of last emitted alert.
 _last_emitted = defaultdict(float)
 
 # Symbol -> side of the most recent emitted alert, for flip detection.
 _last_side = defaultdict(str)
+_last_signal = defaultdict(float)
+
+
+def allow_alert(source: str, symbol: str, side: str) -> bool:
+    """Drop a second paper signal for the same source, coin, and side inside 90 seconds."""
+    key = f"{source}:{symbol}:{side}"
+    now = time.time()
+    if now - _last_signal.get(key, 0) < SIGNAL_DEDUP_SECONDS:
+        return False
+    _last_signal[key] = now
+    return True
 
 
 def submit(symbol: str, side: str, source: str, price: float = 0.0,
@@ -55,8 +67,8 @@ def submit(symbol: str, side: str, source: str, price: float = 0.0,
     _last_side[symbol] = side
 
     side_label = side.upper()
-    emoji = "🟢" if side == "spike" else "🔴"
-    extra = "\n".join(f"• {item}" for item in reasons)
+    emoji = "\U0001f7e2" if side == "spike" else "\U0001f534"
+    extra = "\n".join(f"\u2022 {item}" for item in reasons)
     msg = (
         f"{emoji} <b>{side_label}</b> {symbol} via {source}\n"
         + (f"Price: <b>{price:.6g}</b>\n" if price > 0 else "")
