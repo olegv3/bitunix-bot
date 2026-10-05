@@ -8,7 +8,7 @@ from collections import defaultdict, deque
 
 import requests
 
-from market_filters import allowed, chart_link
+from market_filters import allowed, chart_link, ta_snapshot
 
 POLL_INTERVAL = 10
 WINDOW_SECONDS = 30 * 60
@@ -163,7 +163,8 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
                 f"Up <b>{day_change:.1f}%</b> today, price {price:.6g}\n"
                 f"Day high {day_high:.6g}. Still near the high\n"
                 f"Same idea as a watch call. Not an order\n"
-                f"{chart_link(symbol)}"
+                f"{chart_link(symbol)}\n"
+                f"{ta_snapshot(symbol, price)}"
             )
         elif near_low and day_change <= -8:
             last_candidate[symbol] = now
@@ -176,7 +177,8 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
                 f"Down <b>{abs(day_change):.1f}%</b> today, price {price:.6g}\n"
                 f"Day low {day_low:.6g}. Still near the low\n"
                 f"Same idea as a watch call. Not an order\n"
-                f"{chart_link(symbol)}"
+                f"{chart_link(symbol)}\n"
+                f"{ta_snapshot(symbol, price)}"
             )
 
     if now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
