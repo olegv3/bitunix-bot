@@ -9,7 +9,7 @@ from collections import defaultdict, deque
 import requests
 
 from market_context import note_btc, score as context_score
-from market_filters import allowed, chart_link, strength
+from market_filters import allowed, chart_link, strength, ta_snapshot
 
 POLL_INTERVAL = 5
 LOOKBACK_SECONDS = 10
@@ -32,45 +32,6 @@ history = defaultdict(lambda: deque(maxlen=200))
 last_alert = {}
 pending = {}
 ENTRY_WAIT_SECONDS = 180
-
-
-def ema(values: list, length: int) -> float:
-    k = 2 / (length + 1)
-    value = values[0]
-    for price in values[1:]:
-        value = price * k + value * (1 - k)
-    return value
-
-
-def ta_snapshot(symbol: str, price: float) -> str:
-    try:
-        rows = requests.get(
-            KLINE_URL, params={"symbol": symbol, "interval": "15m", "limit": "80"}, timeout=8
-        ).json().get("data") or []
-        closes = [float(row["close"]) for row in rows]
-        highs = [float(row["high"]) for row in rows]
-        lows = [float(row["low"]) for row in rows]
-    except (TypeError, ValueError, requests.RequestException):
-        return ""
-    if len(closes) < 30:
-        return ""
-    rsi_gain = rsi_loss = 0.0
-    for older, newer in zip(closes[-15:-1], closes[-14:]):
-        diff = newer - older
-        rsi_gain += max(diff, 0)
-        rsi_loss += max(-diff, 0)
-    rsi = 100 if rsi_loss == 0 else 100 - 100 / (1 + rsi_gain / rsi_loss)
-    macd = ema(closes, 12) - ema(closes, 26)
-    mid = sum(closes[-20:]) / 20
-    band = (sum((item - mid) ** 2 for item in closes[-20:]) / 20) ** 0.5
-    above = min((item for item in highs[-40:] if item > price), default=0)
-    below = max((item for item in lows[-40:] if item < price), default=0)
-    return (
-        f"15m RSI {rsi:.0f} · MACD {macd:+.4g}\n"
-        f"EMA9 {ema(closes, 9):.6g} · EMA21 {ema(closes, 21):.6g}\n"
-        f"Bollinger {mid - 2 * band:.6g} to {mid + 2 * band:.6g}\n"
-        f"Nearby support {below:.6g} · resistance {above:.6g}"
-    )
 
 
 def send_telegram(text: str) -> None:
