@@ -76,39 +76,50 @@ def scan() -> None:
                 KLINE_URL, params={"symbol": symbol, "interval": "1d", "limit": "220"}, timeout=12
             ).json().get("data") or []
             closes = [float(item["close"]) for item in candles]
+            lows = [float(item["low"]) for item in candles]
         except (TypeError, ValueError, requests.RequestException):
             continue
         if len(closes) < 55:
             continue
         price = closes[-1]
-        reason = None
-        if len(closes) >= 200:
-            fast, slow = ema(closes, 50), ema(closes, 200)
-            prev_fast, prev_slow = ema(closes[:-1], 50), ema(closes[:-1], 200)
-            if prev_fast <= prev_slow and fast > slow:
-                reason = "daily golden cross, 50 crossed above 200"
         fast20, slow50 = ema(closes, 20), ema(closes, 50)
         value = rsi(closes)
-        if reason is None and fast20 > slow50 and slow50 < price <= fast20 * 1.01 and 40 <= value <= 60:
-            reason = "daily pullback, uptrend and RSI cooled off"
-        if not reason or time.time() - sent.get(symbol, 0) < 3 * 24 * 60 * 60:
+        macd = ema(closes, 12) - ema(closes, 26)
+        mid = sum(closes[-20:]) / 20
+        band = (sum((item - mid) ** 2 for item in closes[-20:]) / 20) ** 0.5
+        checks = []
+        if fast20 > slow50 and price > slow50:
+            checks.append("uptrend, 20 above 50")
+        if 40 <= value <= 65:
+            checks.append(f"RSI {value:.0f}")
+        if macd > 0:
+            checks.append("MACD positive")
+        if price <= mid + band:
+            checks.append("not above the upper band")
+        if len(closes) >= 200 and ema(closes, 50) > ema(closes, 200):
+            checks.append("50 above 200")
+        if len(checks) < 4 or time.time() - sent.get(symbol, 0) < 3 * 24 * 60 * 60:
             continue
+        buy = max(slow50, min(lows[-20:]))
+        if buy >= price:
+            buy = price * 0.99
         sent[symbol] = time.time()
         change = (price - closes[-20]) / closes[-20] * 100
         send_telegram(
             f"📘 <b>TECH WATCH</b> {symbol}\n"
-            f"{reason}\n"
-            f"Price {price:.6g}, 20d {change:+.1f}%, RSI {value:.0f}\n"
-            f"Not a buy. Daily trend only\n"
+            f"{len(checks)} of 5 daily checks agree\n"
+            + "\n".join(f"• {item}" for item in checks)
+            + f"\nPrice {price:.6g}, 20d {change:+.1f}%\n"
+            f"Buy level <b>{buy:.6g}</b>. Still a watch, not an order\n"
             f"{chart_link(symbol)}\n"
             f"{ta_snapshot(symbol, price)}"
         )
-        log.warning("TECH WATCH %s %s", symbol, reason)
+        log.warning("TECH WATCH %s %s checks", symbol, len(checks))
 
 
 def main() -> None:
     log.info("Starting daily technical watch")
-    send_telegram("Technical watch is running. Daily golden cross or cooled pullback only. Not a buy.")
+    send_telegram("Technical watch is running. Needs 4 daily checks to agree. Not an order.")
     while True:
         try:
             scan()
