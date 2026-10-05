@@ -1,28 +1,33 @@
 #!/usr/bin/env python3
-"""1-minute wick alerts for liquid Bitunix futures pairs.
+"""
+1-minute wick alerts for liquid Bitunix futures pairs.
 
 Upper wick = rejection after a push up (possible short watch).
 Lower wick = rejection after a push down (possible bounce watch).
-Candles are fetched in a small thread pool so a full pass is not one-symbol-at-a-time.
+This does not replace the confirmed spike/drop bot.
+
+Fetches klines concurrently across symbols instead of one-at-a-time,
+which cuts a full pass from minutes to seconds and avoids rate limits.
 """
 
 import logging
 import os
 import time
-from concurrent.futures import ThreadPoolExecutor
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import requests
 
-from bot_common import emit_signal, file_logger
 from market_context import score as context_score
 from market_filters import allowed, chart_link, strength, ta_snapshot
+from utils import send_telegram, strip_html
 
 MIN_VOLUME_USDT = 200000
-MIN_RANGE_PCT = 1.5
-WICK_TO_BODY = 2.5
-WICK_SHARE = 0.60
+MIN_RANGE_PCT = 1.5          # ignore small candles
+WICK_TO_BODY = 2.5           # wick must be at least 2.5x the body
+WICK_SHARE = 0.60            # wick must be at least 60% of the whole candle
 COOLDOWN_SECONDS = 60
-WORKERS = 8
+MAX_WORKERS = 20             # concurrent kline requests
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
@@ -32,30 +37,8 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 log = logging.getLogger("bitunix-wick")
-file_logger("bitunix-wick")
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-last_alert = {}
-
-
-def send_telegram(text: str) -> None:
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print(text)
-        return
-    try:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
-    except Exception as exc:
-        log.error("Telegram send failed: %s", exc)
+last_alert = defaultdict(float)
 
 
 def load_symbols() -> list:
@@ -116,9 +99,6 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
     points, reasons, with_btc = context_score(symbol, context_side, window_seconds=60)
     if points < 1:
         return
-    trade_side = "short" if side == "upper" else "long"
-    if not emit_signal("wick", symbol, trade_side, close, 1.2, 2.0, side):
-        return
     last_alert[symbol] = now
     extra = "\n".join(f"• {item}" for item in reasons)
     if with_btc:
@@ -127,7 +107,7 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
     label = strength(range_pct)
     if side == "upper":
         msg = (
-            f"🔻 <b>UPPER WICK</b> {symbol}  {label}\n"
+            f"🗓️ <b>UPPER WICK</b> {symbol}  {label}\n"
             f"Rejected high. Wick <b>{wick_pct:.2f}%</b>, candle range {range_pct:.2f}%\n"
             f"O {open_:.6g}  H {high:.6g}  L {low:.6g}  C {close:.6g}\n"
             f"{extra}\nConfidence checks: {points}\n"
@@ -144,30 +124,42 @@ def check_wick(symbol: str, candle: dict, now: float) -> None:
     note = ta_snapshot(symbol, close)
     if note:
         msg += "\n" + note
-    log.warning(msg.replace("<b>", "").replace("</b>", ""))
+    log.warning(strip_html(msg))
     send_telegram(msg)
 
 
-def scan_one(symbol: str) -> None:
+def scan_pass(symbols: list) -> None:
     now = time.time()
-    try:
-        candle = latest_candle(symbol)
-        if candle:
-            check_wick(symbol, candle, now)
-    except Exception as exc:
-        log.error("%s kline failed: %s", symbol, exc)
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+        futures = {pool.submit(latest_candle, symbol): symbol for symbol in symbols}
+        for future in as_completed(futures):
+            symbol = futures[future]
+            try:
+                candle = future.result()
+                if candle:
+                    check_wick(symbol, candle, now)
+            except Exception as exc:
+                log.error("%s kline failed: %s", symbol, exc)
 
 
 def main() -> None:
     symbols = load_symbols()
-    log.info("Scanning %s pairs for 1m wicks with %s workers", len(symbols), WORKERS)
-    send_telegram("Wick bot is running. 1-minute rejection wicks are paper-tracked. Not an order.")
-    with ThreadPoolExecutor(max_workers=WORKERS) as pool:
-        while True:
-            list(pool.map(scan_one, symbols))
-            log.info("Finished a wick pass over %s pairs", len(symbols))
-            symbols = load_symbols()
-            time.sleep(2)
+    log.info("Scanning %s pairs for 1m wicks with %s workers", len(symbols), MAX_WORKERS)
+    send_telegram(
+        f"Wick bot is running. Scanning {len(symbols)} pairs concurrently "
+        f"with {MAX_WORKERS} workers."
+    )
+    while True:
+        t0 = time.time()
+        try:
+            scan_pass(symbols)
+        except Exception as exc:
+            log.error("Wick pass failed: %s", exc)
+        elapsed = time.time() - t0
+        log.info("Finished a wick pass in %.1fs", elapsed)
+        # Sleep just enough to land near the top of the next minute candle.
+        sleep_for = max(1.0, 60 - (time.time() % 60))
+        time.sleep(sleep_for)
 
 
 if __name__ == "__main__":
