@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily technical watch. At most five coins, and only near the buy level."""
+"""Daily technical watch. Every coin near the buy level, not a fixed cap."""
 
 import logging
 import os
@@ -11,7 +11,6 @@ from market_filters import allowed, chart_link, ta_snapshot
 
 SCAN_SECONDS = 6 * 60 * 60
 MIN_VOLUME_USDT = 500000
-MAX_ALERTS = 5
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
@@ -120,7 +119,7 @@ def scan() -> None:
             continue
         found.append((gap, symbol, price, change, buy, checks))
     found.sort()
-    for gap, symbol, price, change, buy, checks in found[:MAX_ALERTS]:
+    for gap, symbol, price, change, buy, checks in found:
         sent[symbol] = time.time()
         send_telegram(
             f"\U0001f4d8 <b>TECH WATCH</b> {symbol}\n"
@@ -132,12 +131,12 @@ def scan() -> None:
             f"{ta_snapshot(symbol, price)}"
         )
         log.warning("TECH WATCH %s %.1f%% from buy", symbol, gap)
-    log.info("Tech scan kept %s of %s matches", min(len(found), MAX_ALERTS), len(found))
+    log.info("Tech scan sent %s coins", len(found))
 
 
 def main() -> None:
     log.info("Starting daily technical watch")
-    send_telegram("Technical watch is running. At most 5 coins, and only within 3% of the buy level.")
+    send_telegram("Technical watch is running. No coin cap. Only coins within 3% of the buy level.")
     while True:
         try:
             scan()
