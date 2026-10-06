@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Failed-move setup alerts. An opened setup is paper-tracked. Not an order."""
+"""Watching alerts open a paper trade at the alert price. Not a live order."""
 
 import logging
 import os
@@ -123,6 +123,18 @@ def move_needed(symbol: str) -> float:
     return BTC_MOVE_PCT if symbol == "BTCUSDT" else MOVE_PCT
 
 
+def open_paper(symbol: str, side: str, price: float, now: float) -> None:
+    if not emit_signal("setup", symbol, side, price, 1.2, 2.0, "watching alert"):
+        return
+    last_alert[symbol] = now
+    send_telegram(
+        f"\U0001f4c4 <b>PAPER OPEN</b> {symbol}\n"
+        f"{side.title()} from <b>{price:.6g}</b> with $1\n"
+        f"Opened on the watching alert. Half off around 100% leveraged profit.\n"
+        f"Not a live order."
+    )
+
+
 def check(symbol: str, price: float, now: float, day_high: float, day_low: float, day_open: float) -> None:
     follow_up(symbol, price)
     rows = history[symbol]
@@ -155,6 +167,7 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
                 f"{chart_link(symbol)}\n"
                 f"{ta_snapshot(symbol, price)}"
             )
+            open_paper(symbol, "short", price, now)
         elif near_low and day_change <= -8:
             last_candidate[symbol] = now
             send_telegram(
@@ -165,6 +178,7 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
                 f"{chart_link(symbol)}\n"
                 f"{ta_snapshot(symbol, price)}"
             )
+            open_paper(symbol, "long", price, now)
 
     if now - last_alert.get(symbol, 0) < COOLDOWN_SECONDS:
         return
@@ -229,7 +243,7 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
 def main() -> None:
     log.info("Starting setup alerts")
     send_telegram(
-        "Setup bot loosened. An opened setup now starts a paper trade with the same ladder. Not an order."
+        "A watching long or short now opens a paper trade at the alert price. Not a live order."
     )
     last_beat = time.time()
     while True:
