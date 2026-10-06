@@ -17,6 +17,7 @@ from bot_common import SIGNALS_PATH, ensure_data, file_logger, send_telegram
 from thresholds import update_from_outcomes
 
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
+PAIRS_URL = "https://fapi.bitunix.com/api/v1/futures/market/trading_pairs"
 POLL_SECONDS = 15
 HOLD_SECONDS = 6 * 60 * 60
 SUMMARY_SECONDS = 6 * 60 * 60
@@ -31,6 +32,8 @@ CLOSED_PATH = DATA_DIR / "closed_paper.jsonl"
 DASHBOARD_PATH = DATA_DIR / "dashboard.txt"
 
 log = file_logger("bitunix-paper")
+_leverage = {}
+_leverage_at = 0.0
 
 
 def load_open() -> dict:
@@ -57,21 +60,35 @@ def save_open(rows: dict) -> None:
     OPEN_PATH.write_text(json.dumps(rows), encoding="utf-8")
 
 
+def leverage_map() -> dict:
+    global _leverage_at
+    if _leverage and time.time() - _leverage_at < 60 * 60:
+        return _leverage
+    rows = requests.get(PAIRS_URL, timeout=20).json().get("data") or []
+    for row in rows:
+        symbol = row.get("symbol")
+        try:
+            lev = float(row.get("maxLeverage") or 0)
+        except (TypeError, ValueError):
+            continue
+        if symbol and lev > 0:
+            _leverage[symbol] = min(lev, 200)
+    _leverage_at = time.time()
+    return _leverage
+
+
 def market() -> tuple:
     rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
-    prices, leverage = {}, {}
+    prices = {}
     for row in rows:
         symbol = row.get("symbol")
         try:
             price = float(row.get("lastPrice") or row.get("last") or 0)
-            lev = float(row.get("maxLeverage") or row.get("leverage") or 0)
         except (TypeError, ValueError):
             continue
         if symbol and price > 0:
             prices[symbol] = price
-            if lev > 0:
-                leverage[symbol] = min(lev, 200)
-    return prices, leverage
+    return prices, leverage_map()
 
 
 def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
@@ -89,6 +106,7 @@ def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
         if key in open_rows or not symbol or not row.get("entry") or symbol in open_symbols:
             continue
         entry = float(row["entry"])
+        lev = leverage.get(symbol) or DEFAULT_LEVERAGE
         row.update({
             "margin": 1.0,
             "avg": entry,
@@ -96,11 +114,11 @@ def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
             "runner": 1.0,
             "banked": 0.0,
             "peak_pct": 0.0,
-            "leverage": leverage.get(symbol) or DEFAULT_LEVERAGE,
+            "leverage": lev,
         })
         open_rows[key] = row
         open_symbols.add(symbol)
-        log.info("Paper open %s %s @ %s", row.get("side"), symbol, entry)
+        log.info("Paper open %s %s @ %s x%s", row.get("side"), symbol, entry, lev)
     return len(lines)
 
 
@@ -168,8 +186,8 @@ def main() -> None:
     ensure_data()
     log.info("Paper trader starting")
     send_telegram(
-        "Paper exit updated. Half comes off around 100% leveraged profit. "
-        "The rest trails and stops only while it is still green. Not a live order."
+        "Paper trades now use each coin's max leverage. "
+        "Half still comes off around 100% leveraged profit. Not a live order."
     )
     open_rows = load_open()
     offset = 0
@@ -203,7 +221,7 @@ def main() -> None:
                     continue
                 if not result:
                     continue
-                pnl = dollars if result != "stop" else dollars
+                pnl = dollars
                 open_rows.pop(key, None)
                 done = dict(trade)
                 done.update({"result": result, "exit": price, "pnl": pnl, "closed_at": now})
