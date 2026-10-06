@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Failed-move setup alerts. First rejection is enough. Not an order."""
+"""Failed-move setup alerts. An opened setup is paper-tracked. Not an order."""
 
 import logging
 import os
@@ -8,6 +8,7 @@ from collections import defaultdict, deque
 
 import requests
 
+from bot_common import emit_signal
 from market_filters import allowed, chart_link, ta_snapshot
 
 POLL_INTERVAL = 10
@@ -190,6 +191,9 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
     if touches[symbol] < 1 or not spread_ok(symbol):
         return
 
+    side = "short" if short_ready else "long"
+    if not emit_signal("setup", symbol, side, price, 1.2, 2.0, "first rejection"):
+        return
     last_alert[symbol] = now
     touches[symbol] = 0
     if short_ready:
@@ -214,12 +218,18 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
         )
     log.warning(msg.replace("<b>", "").replace("</b>", ""))
     send_telegram(msg)
+    send_telegram(
+        f"\U0001f4c4 <b>PAPER OPEN</b> {symbol}\n"
+        f"{side.title()} from <b>{price:.6g}</b> with $1\n"
+        f"Same ladder as a late trade. Half off around 100% leveraged profit.\n"
+        f"Not a live order."
+    )
 
 
 def main() -> None:
     log.info("Starting setup alerts")
     send_telegram(
-        "Setup bot loosened. An 8% day move can watch, and the first rejection can open a setup. Not an order."
+        "Setup bot loosened. An opened setup now starts a paper trade with the same ladder. Not an order."
     )
     last_beat = time.time()
     while True:
