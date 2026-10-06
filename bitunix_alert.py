@@ -93,10 +93,10 @@ def check(symbol: str, price: float, now: float) -> None:
     if note:
         msg += "\n" + note
     log.warning("%s %s %.2f%%", label, symbol, change)
-    if change >= 0 or "HIGH" not in label or change > -4 or with_btc:
+    if "HIGH" not in label or abs(change) < 4 or with_btc:
         return
     send_telegram(msg)
-    pending[symbol] = {"price": price, "at": now, "change": change}
+    pending[symbol] = {"side": "long" if change < 0 else "short", "price": price, "at": now, "change": change}
 
 
 def follow_entries(now: float, prices: dict) -> None:
@@ -109,32 +109,43 @@ def follow_entries(now: float, prices: dict) -> None:
         if not price or item["price"] <= 0:
             continue
         move = (price - item["price"]) / item["price"] * 100
-        if move > -bar:
-            log.info("Skip late long %s, only %+.2f%% (bar %.2f)", symbol, move, bar)
+        side = item["side"]
+        continued = move <= -bar if side == "long" else move >= bar
+        if not continued:
+            log.info("Skip late %s %s, only %+.2f%% (bar %.2f)", side, symbol, move, bar)
             continue
-        if not emit_signal("late", symbol, "long", price, 1.2, 2.0, f"after {item['change']:+.1f}%"):
+        if not emit_signal("late", symbol, side, price, 1.2, 2.0, f"after {item['change']:+.1f}%"):
             continue
         note = ta_snapshot(symbol, price)
         extra = f"\n{note}" if note else ""
-        send_telegram(
-            f"\U0001f7e2 <b>LATE LONG</b> {symbol}\n"
-            f"Drop was {item['change']:+.1f}% at {item['price']:.6g}\n"
-            f"3 minutes later, lower: <b>{price:.6g}</b> ({move:+.2f}%)\n"
-            f"Not moving with BTC. Not an order\n"
-            f"{chart_link(symbol)}{extra}"
-        )
+        if side == "long":
+            send_telegram(
+                f"\U0001f7e2 <b>LATE LONG</b> {symbol}\n"
+                f"Drop was {item['change']:+.1f}% at {item['price']:.6g}\n"
+                f"3 minutes later, lower: <b>{price:.6g}</b> ({move:+.2f}%)\n"
+                f"Not moving with BTC. Not an order\n"
+                f"{chart_link(symbol)}{extra}"
+            )
+        else:
+            send_telegram(
+                f"\U0001f534 <b>LATE SHORT</b> {symbol}\n"
+                f"Spike was {item['change']:+.1f}% at {item['price']:.6g}\n"
+                f"3 minutes later, higher: <b>{price:.6g}</b> ({move:+.2f}%)\n"
+                f"Not moving with BTC. Not an order\n"
+                f"{chart_link(symbol)}{extra}"
+            )
         send_telegram(
             f"\U0001f4c4 <b>PAPER OPEN</b> {symbol}\n"
-            f"Long from <b>{price:.6g}</b> with $1\n"
-            f"Adds at $1, $3, then $5 if it keeps falling. Stop at a $50 loss.\n"
+            f"{side.title()} from <b>{price:.6g}</b> with $1\n"
+            f"Adds if it keeps going against the entry. Half off around 100% leveraged profit.\n"
             f"Not a live order."
         )
-        log.warning("LATE LONG %s %+.2f%%", symbol, move)
+        log.warning("LATE %s %s %+.2f%%", side.upper(), symbol, move)
 
 
 def main() -> None:
     log.info("Starting confirmed alert bot, cooldown %ss", COOLDOWN_SECONDS)
-    send_telegram("Alert bot is running. A late long now sends a paper-open message.")
+    send_telegram("Alert bot is running. Late longs and late shorts both send a paper-open message.")
     while True:
         try:
             rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
