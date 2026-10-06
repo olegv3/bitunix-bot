@@ -19,7 +19,6 @@ THRESHOLD_PCT = 2.0
 MIN_VOLUME_USDT = 200000
 COOLDOWN_SECONDS = 180
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
-KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -76,16 +75,16 @@ def check(symbol: str, price: float, now: float) -> None:
     if points >= 2 and not with_btc:
         label = f"{label}  HIGH"
     if change > 0:
-        title = f"🟢🟢🟢 <b>SPIKE</b> 🟢🟢🟢  {label}"
+        title = "\U0001f7e2\U0001f7e2\U0001f7e2 <b>SPIKE</b> \U0001f7e2\U0001f7e2\U0001f7e2  " + label
     else:
-        title = f"🔴🔴🔴 <b>DROP</b> 🔴🔴🔴  {label}"
-    extra = "\n".join(f"• {item}" for item in reasons)
+        title = "\U0001f534\U0001f534\U0001f534 <b>DROP</b> \U0001f534\U0001f534\U0001f534  " + label
+    extra = "\n".join(f"\u2022 {item}" for item in reasons)
     if with_btc:
         extra = (extra + "\n" if extra else "") + "WITH BTC"
     msg = (
         f"{title}\n"
         f"<b>{symbol}</b>  <b>{change:+.2f}%</b> in {elapsed:.0f}s\n"
-        f"{old_price:.6g} → {price:.6g}\n"
+        f"{old_price:.6g} \u2192 {price:.6g}\n"
         + (extra + "\n" if extra else "")
         + f"Confidence checks: {points}\n"
         f"{chart_link(symbol)}"
@@ -94,14 +93,12 @@ def check(symbol: str, price: float, now: float) -> None:
     if note:
         msg += "\n" + note
     log.warning("%s %s %.2f%%", label, symbol, change)
-    if "HIGH" not in label or abs(change) < 4:
+    if change >= 0 or "HIGH" not in label or change > -4 or with_btc:
+        if change < 0 and with_btc:
+            log.info("Skip late long %s, moving with BTC", symbol)
         return
-    trade_side = "long" if change < 0 else "short"
-    if not emit_signal("alert", symbol, trade_side, price, 1.2, 2.0, f"{change:+.2f}%"):
-        return
-    if change < 0:
-        send_telegram(msg)
-    pending[symbol] = {"side": trade_side, "price": price, "at": now, "change": change}
+    send_telegram(msg)
+    pending[symbol] = {"price": price, "at": now, "change": change}
 
 
 def follow_entries(now: float, prices: dict) -> None:
@@ -114,38 +111,26 @@ def follow_entries(now: float, prices: dict) -> None:
         if not price or item["price"] <= 0:
             continue
         move = (price - item["price"]) / item["price"] * 100
-        if item["side"] == "long" and move > -bar:
+        if move > -bar:
             log.info("Skip late long %s, only %+.2f%% (bar %.2f)", symbol, move, bar)
             continue
-        if item["side"] == "short" and move < bar:
-            log.info("Skip late short %s, only %+.2f%% (bar %.2f)", symbol, move, bar)
+        if not emit_signal("late", symbol, "long", price, 1.2, 2.0, f"after {item['change']:+.1f}%"):
             continue
         note = ta_snapshot(symbol, price)
         extra = f"\n{note}" if note else ""
-        if not emit_signal("late", symbol, item["side"], price, 1.2, 2.0, f"after {item['change']:+.1f}%"):
-            continue
-        if item["side"] == "long":
-            send_telegram(
-                f"🟢 <b>LATE LONG</b> {symbol}\n"
-                f"Drop was {item['change']:+.1f}% at {item['price']:.6g}\n"
-                f"3 minutes later, lower: <b>{price:.6g}</b> ({move:+.2f}%)\n"
-                f"Not an order\n"
-                f"{chart_link(symbol)}{extra}"
-            )
-        else:
-            send_telegram(
-                f"🔴 <b>LATE SHORT</b> {symbol}\n"
-                f"Spike was {item['change']:+.1f}% at {item['price']:.6g}\n"
-                f"3 minutes later, higher: <b>{price:.6g}</b> ({move:+.2f}%)\n"
-                f"Not an order\n"
-                f"{chart_link(symbol)}{extra}"
-            )
-        log.warning("LATE %s %s %+.2f%%", item["side"].upper(), symbol, move)
+        send_telegram(
+            f"\U0001f7e2 <b>LATE LONG</b> {symbol}\n"
+            f"Drop was {item['change']:+.1f}% at {item['price']:.6g}\n"
+            f"3 minutes later, lower: <b>{price:.6g}</b> ({move:+.2f}%)\n"
+            f"Not moving with BTC. Not an order\n"
+            f"{chart_link(symbol)}{extra}"
+        )
+        log.warning("LATE LONG %s %+.2f%%", symbol, move)
 
 
 def main() -> None:
     log.info("Starting confirmed alert bot, cooldown %ss", COOLDOWN_SECONDS)
-    send_telegram("Alert bot is running. High-confidence drops and late entries are paper-tracked. Not an order.")
+    send_telegram("Alert bot is running. Only a late long that is not moving with BTC is paper-tracked.")
     while True:
         try:
             rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
