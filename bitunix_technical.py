@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Daily technical watch. Not a buy signal."""
+"""Daily technical watch. At most five coins, and only near the buy level."""
 
 import logging
 import os
@@ -11,6 +11,7 @@ from market_filters import allowed, chart_link, ta_snapshot
 
 SCAN_SECONDS = 6 * 60 * 60
 MIN_VOLUME_USDT = 500000
+MAX_ALERTS = 5
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 KLINE_URL = "https://fapi.bitunix.com/api/v1/futures/market/kline"
 
@@ -63,6 +64,7 @@ def rsi(values: list) -> float:
 
 def scan() -> None:
     rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
+    found = []
     for row in rows:
         symbol = row.get("symbol")
         try:
@@ -71,6 +73,8 @@ def scan() -> None:
         except (TypeError, ValueError):
             continue
         if not symbol or not allowed(symbol) or volume < MIN_VOLUME_USDT or live <= 0:
+            continue
+        if time.time() - sent.get(symbol, 0) < 3 * 24 * 60 * 60:
             continue
         try:
             candles = requests.get(
@@ -84,7 +88,6 @@ def scan() -> None:
         if len(closes) < 55 or closes[-1] <= 0:
             continue
         if abs(live - closes[-1]) / closes[-1] > 0.08:
-            log.info("Skip %s, daily close %.6g vs live %.6g", symbol, closes[-1], live)
             continue
         price = live
         closes[-1] = live
@@ -96,7 +99,7 @@ def scan() -> None:
         checks = []
         if fast20 > slow50 and price > slow50:
             checks.append("uptrend, 20 above 50")
-        if 40 <= value <= 65:
+        if 40 <= value <= 60:
             checks.append(f"RSI {value:.0f}")
         if macd > 0:
             checks.append("MACD positive")
@@ -104,28 +107,37 @@ def scan() -> None:
             checks.append("not above the upper band")
         if len(closes) >= 200 and ema(closes, 50) > ema(closes, 200):
             checks.append("50 above 200")
-        if len(checks) < 4 or time.time() - sent.get(symbol, 0) < 3 * 24 * 60 * 60:
+        if len(checks) < 4:
+            continue
+        change = (price - closes[-20]) / closes[-20] * 100
+        if change > 20:
             continue
         buy = max(slow50, min(lows[-20:]))
         if buy >= price:
             buy = price * 0.99
+        gap = (price - buy) / buy * 100
+        if gap > 3:
+            continue
+        found.append((gap, symbol, price, change, buy, checks))
+    found.sort()
+    for gap, symbol, price, change, buy, checks in found[:MAX_ALERTS]:
         sent[symbol] = time.time()
-        change = (price - closes[-20]) / closes[-20] * 100
         send_telegram(
-            f"📘 <b>TECH WATCH</b> {symbol}\n"
+            f"\U0001f4d8 <b>TECH WATCH</b> {symbol}\n"
             f"{len(checks)} of 5 daily checks agree\n"
-            + "\n".join(f"• {item}" for item in checks)
+            + "\n".join(f"\u2022 {item}" for item in checks)
             + f"\nPrice {price:.6g}, 20d {change:+.1f}%\n"
-            f"Buy level <b>{buy:.6g}</b>. Still a watch, not an order\n"
+            f"Buy level <b>{buy:.6g}</b>, {gap:.1f}% away. Still a watch, not an order\n"
             f"{chart_link(symbol)}\n"
             f"{ta_snapshot(symbol, price)}"
         )
-        log.warning("TECH WATCH %s %s checks", symbol, len(checks))
+        log.warning("TECH WATCH %s %.1f%% from buy", symbol, gap)
+    log.info("Tech scan kept %s of %s matches", min(len(found), MAX_ALERTS), len(found))
 
 
 def main() -> None:
     log.info("Starting daily technical watch")
-    send_telegram("Technical watch is running. Needs 4 daily checks to agree. Not an order.")
+    send_telegram("Technical watch is running. At most 5 coins, and only within 3% of the buy level.")
     while True:
         try:
             scan()
