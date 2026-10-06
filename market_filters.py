@@ -3,15 +3,25 @@
 import requests
 
 STOCK_BASES = {
-    "AAPL", "AMD", "AMZN", "AVGO", "BABA", "COIN", "DIS", "GOOGL", "META",
-    "MSFT", "MSTR", "NFLX", "NVDA", "TSLA", "XOM", "TWST", "KSTR", "MVLL",
-    "XBI", "SPY", "QQQ", "IWM", "EWZ", "INTC", "PLTR", "SMCI", "ARM", "HOOD",
-    "UBER", "PYPL", "BA", "JPM", "GS", "BAC", "WMT", "COST", "NKE",
-    "ORCL", "CRM", "ADBE", "QCOM", "MU", "TSM", "ASML", "SHOP", "SQ",
-    "RIVN", "LCID", "GME", "AMC", "DKNG", "ABNB", "SNOW", "NET", "CRWD",
-    "SAMSUNG", "SNDK", "SOXL", "TQQQ", "SQQQ", "SPXU", "UVXY", "ARKK",
-    "SPX", "MRNA", "STXX", "SNXX", "ALAB", "SKHYNIX", "GLW", "EWY",
-    "NBIS", "DRAM", "KORU", "NATGAS", "PENGSTOCK", "AAOI", "VST",
+    "AAPL", "AAOI", "ACN", "ADBE", "ALAB", "AMAT", "AMC", "AMD", "AMZN",
+    "ANET", "APLD", "ARM", "ASML", "ASTS", "AVGO", "AXTI", "BABA", "BILL",
+    "BMNR", "BRKB", "BYD", "CATERPILLAR", "CIEN", "COHR", "COIN", "COST",
+    "CRCL", "CRDO", "CRM", "CRML", "CRWV", "CSCO", "CVNA", "CVX", "DELL",
+    "DIS", "DJT", "DKNG", "DRAM", "EBAY", "EWJ", "EWY", "EWZ", "FLEX",
+    "FLNC", "FUTU", "GAMESTOP", "GDX", "GEV", "GLW", "GOOGL", "GPRO",
+    "GS", "GTLB", "HD", "HEI", "HIMS", "HOOD", "HPE", "HUT", "HYUNDAI",
+    "IBM", "INTC", "INTW", "IONQ", "IREN", "IWM", "JPM", "KLAC", "KO",
+    "KODEX200", "KORU", "KUAISHOU", "LLY", "LRCX", "MARA", "MCD", "MDB",
+    "MEITUAN", "META", "MRK", "MRNA", "MRVL", "MSFT", "MSTR", "MU",
+    "NAVER", "NBIS", "NET", "NFLX", "NKE", "NOK", "NVDA", "NVDL", "NVO",
+    "OKLO", "ONDS", "ORCL", "PANW", "PDD", "PENGSTOCK", "PEP", "PLTR",
+    "PYPL", "QBTS", "QCOM", "QQQ", "RDDT", "RIVN", "RKLB", "SAMSUNG",
+    "SAMSUNGEM", "SKHY", "SKHYNIX", "SMCI", "SMH", "SNDK", "SNOW", "SOFI",
+    "SONY", "SOXL", "SOXS", "SPX", "SPY", "SQQQ", "STXX", "SNXX", "TBT",
+    "TEM", "TENCENT", "TMF", "TQQQ", "TSLA", "TSLL", "TSM", "TTWO",
+    "TWST", "TXN", "TZA", "UBER", "UNH", "URNM", "USAR", "UVXY", "VRT",
+    "VST", "WDC", "WMT", "XBI", "XIAOMI", "XLE", "XOM", "ZM", "ZS",
+    "NATGAS", "KSTR", "MVLL", "ARKK", "SPXU",
 }
 COMMODITY_BASES = {"XAU", "XAG", "CL"}
 
