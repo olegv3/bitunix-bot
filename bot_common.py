@@ -51,7 +51,9 @@ def send_telegram(text: str) -> None:
 
 
 def emit_signal(source: str, symbol: str, side: str, entry: float, stop_pct: float, target_pct: float, note: str = "") -> bool:
-    """Append a paper signal. Returns False when the pipeline dedups it."""
+    """Paper-track a late long only. Other alerts still send."""
+    if source != "late" or side != "long":
+        return True
     from pipeline import allow_alert
 
     if not allow_alert(source, symbol, side):
