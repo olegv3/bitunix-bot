@@ -9,6 +9,7 @@ STOCK_BASES = {
     "UBER", "PYPL", "BA", "JPM", "GS", "BAC", "WMT", "COST", "NKE",
     "ORCL", "CRM", "ADBE", "QCOM", "MU", "TSM", "ASML", "SHOP", "SQ",
     "RIVN", "LCID", "GME", "AMC", "DKNG", "ABNB", "SNOW", "NET", "CRWD",
+    "SAMSUNG", "SNDK", "SOXL", "TQQQ", "SQQQ", "SPXU", "UVXY", "ARKK",
 }
 COMMODITY_BASES = {"XAU", "XAG", "CL"}
 
@@ -88,8 +89,8 @@ def ta_snapshot(symbol: str, price: float) -> str:
     support = f"{max(below):.6g}" if below else "at the low"
     resistance = f"{min(above):.6g}" if above else "at the high"
     return (
-        f"15m RSI {rsi:.0f} · MACD {macd:+.4g}\n"
-        f"EMA9 {ema(closes, 9):.6g} · EMA21 {ema(closes, 21):.6g}\n"
+        f"15m RSI {rsi:.0f} \u00b7 MACD {macd:+.4g}\n"
+        f"EMA9 {ema(closes, 9):.6g} \u00b7 EMA21 {ema(closes, 21):.6g}\n"
         f"Bollinger {mid - 2 * band:.6g} to {mid + 2 * band:.6g}\n"
-        f"4h support {support} · resistance {resistance}"
+        f"4h support {support} \u00b7 resistance {resistance}"
     )
