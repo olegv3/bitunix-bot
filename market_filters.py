@@ -11,7 +11,7 @@ STOCK_BASES = {
     "RIVN", "LCID", "GME", "AMC", "DKNG", "ABNB", "SNOW", "NET", "CRWD",
     "SAMSUNG", "SNDK", "SOXL", "TQQQ", "SQQQ", "SPXU", "UVXY", "ARKK",
     "SPX", "MRNA", "STXX", "SNXX", "ALAB", "SKHYNIX", "GLW", "EWY",
-    "NBIS", "DRAM", "KORU", "NATGAS", "PENGSTOCK", "AAOI",
+    "NBIS", "DRAM", "KORU", "NATGAS", "PENGSTOCK", "AAOI", "VST",
 }
 COMMODITY_BASES = {"XAU", "XAG", "CL"}
 
