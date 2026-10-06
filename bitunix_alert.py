@@ -17,7 +17,7 @@ POLL_INTERVAL = 5
 LOOKBACK_SECONDS = 10
 THRESHOLD_PCT = 2.0
 MIN_VOLUME_USDT = 200000
-COOLDOWN_SECONDS = 180
+COOLDOWN_SECONDS = 1800
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 
 logging.basicConfig(
@@ -94,8 +94,6 @@ def check(symbol: str, price: float, now: float) -> None:
         msg += "\n" + note
     log.warning("%s %s %.2f%%", label, symbol, change)
     if change >= 0 or "HIGH" not in label or change > -4 or with_btc:
-        if change < 0 and with_btc:
-            log.info("Skip late long %s, moving with BTC", symbol)
         return
     send_telegram(msg)
     pending[symbol] = {"price": price, "at": now, "change": change}
@@ -125,12 +123,18 @@ def follow_entries(now: float, prices: dict) -> None:
             f"Not moving with BTC. Not an order\n"
             f"{chart_link(symbol)}{extra}"
         )
+        send_telegram(
+            f"\U0001f4c4 <b>PAPER OPEN</b> {symbol}\n"
+            f"Long from <b>{price:.6g}</b> with $1\n"
+            f"Adds at $1, $3, then $5 if it keeps falling. Stop at a $50 loss.\n"
+            f"Not a live order."
+        )
         log.warning("LATE LONG %s %+.2f%%", symbol, move)
 
 
 def main() -> None:
     log.info("Starting confirmed alert bot, cooldown %ss", COOLDOWN_SECONDS)
-    send_telegram("Alert bot is running. Only a late long that is not moving with BTC is paper-tracked.")
+    send_telegram("Alert bot is running. A late long now sends a paper-open message.")
     while True:
         try:
             rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
