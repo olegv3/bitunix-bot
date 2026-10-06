@@ -10,6 +10,8 @@ STOCK_BASES = {
     "ORCL", "CRM", "ADBE", "QCOM", "MU", "TSM", "ASML", "SHOP", "SQ",
     "RIVN", "LCID", "GME", "AMC", "DKNG", "ABNB", "SNOW", "NET", "CRWD",
     "SAMSUNG", "SNDK", "SOXL", "TQQQ", "SQQQ", "SPXU", "UVXY", "ARKK",
+    "SPX", "MRNA", "STXX", "SNXX", "ALAB", "SKHYNIX", "GLW", "EWY",
+    "NBIS", "DRAM", "KORU", "NATGAS", "PENGSTOCK",
 }
 COMMODITY_BASES = {"XAU", "XAG", "CL"}
 
@@ -23,7 +25,7 @@ def allowed(symbol: str) -> bool:
     base = base_of(symbol)
     if base in COMMODITY_BASES:
         return True
-    if base in STOCK_BASES:
+    if base in STOCK_BASES or base.endswith("STOCK"):
         return False
     return symbol.upper().endswith("USDT")
 
