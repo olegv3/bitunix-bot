@@ -22,6 +22,9 @@ HELD_PCT = 1.0
 MAX_SPREAD_PCT = 0.3
 COOLDOWN_SECONDS = 1800
 MIN_VOLUME_USDT = 200000
+SHORT_DAY_PCT = 8.0
+LONG_DAY_PCT = 12.0
+LONG_OFF_LOW_PCT = 0.4
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
 
@@ -154,10 +157,11 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
     needed = move_needed(symbol)
     day_change = (price - day_open) / day_open * 100 if day_open else 0
     near_high = day_high and (day_high - price) / day_high * 100 <= 1.5
-    near_low = day_low and (price - day_low) / day_low * 100 <= 1.5
+    off_low = day_low and (price - day_low) / day_low * 100
+    near_low = day_low and off_low <= 1.5 and off_low >= LONG_OFF_LOW_PCT
 
     if now - last_candidate.get(symbol, 0) >= COOLDOWN_SECONDS:
-        if near_high and day_change >= 8:
+        if near_high and day_change >= SHORT_DAY_PCT:
             last_candidate[symbol] = now
             send_telegram(
                 f"\U0001f7e0 <b>WATCHING SHORT</b> {symbol}\n"
@@ -168,12 +172,12 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
                 f"{ta_snapshot(symbol, price)}"
             )
             open_paper(symbol, "short", price, now)
-        elif near_low and day_change <= -8:
+        elif near_low and day_change <= -LONG_DAY_PCT:
             last_candidate[symbol] = now
             send_telegram(
                 f"\U0001f7e2 <b>WATCHING LONG</b> {symbol}\n"
                 f"Down <b>{abs(day_change):.1f}%</b> today, price {price:.6g}\n"
-                f"Day low {day_low:.6g}. Still near the low\n"
+                f"Day low {day_low:.6g}. Off the low, not still falling\n"
                 f"Not an order\n"
                 f"{chart_link(symbol)}\n"
                 f"{ta_snapshot(symbol, price)}"
@@ -242,9 +246,6 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
 
 def main() -> None:
     log.info("Starting setup alerts")
-    send_telegram(
-        "A watching long or short now opens a paper trade at the alert price. Not a live order."
-    )
     last_beat = time.time()
     while True:
         try:
