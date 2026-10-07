@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Paper follower. Sends one catch-up partial for trades already past the half sale."""
+"""Paper follower. One catch-up partial, and it stays up if startup fails."""
 
 import json
 import os
 import time
+import traceback
 from pathlib import Path
 
 import requests
@@ -57,7 +58,10 @@ def leverage_map() -> dict:
     global _leverage_at
     if _leverage and time.time() - _leverage_at < 60 * 60:
         return _leverage
-    rows = requests.get(PAIRS_URL, timeout=20).json().get("data") or []
+    try:
+        rows = requests.get(PAIRS_URL, timeout=20).json().get("data") or []
+    except requests.RequestException:
+        return _leverage
     for row in rows:
         symbol = row.get("symbol")
         try:
@@ -127,7 +131,7 @@ def catch_up(open_rows: dict, prices: dict) -> None:
             continue
         side = trade.get("side")
         lev = float(trade.get("leverage") or DEFAULT_LEVERAGE)
-        gain = move_pct(side, float(trade["avg"]), price) * lev
+        gain = move_pct(side, float(trade.get("avg") or trade.get("entry") or 0), price) * lev
         if gain < BANK_AT_PCT:
             continue
         trade["best"] = price
@@ -139,7 +143,7 @@ def catch_up(open_rows: dict, prices: dict) -> None:
     if not due:
         send_telegram(f"Paper follower restarted. {len(open_rows)} open. None are past the half sale yet.")
         return
-    send_telegram("PAPER PARTIAL catch-up\n" + "\n".join(due) + "\nNot a live fill.")
+    send_telegram("PAPER PARTIAL catch-up\n" + "\n".join(due[:20]) + "\nNot a live fill.")
 
 
 def resolve(trade: dict, price: float, now: float):
@@ -147,25 +151,25 @@ def resolve(trade: dict, price: float, now: float):
     lev = float(trade.get("leverage") or DEFAULT_LEVERAGE)
     adds = int(trade.get("adds") or 0)
     runner = float(trade.get("runner") or 1)
+    avg = float(trade.get("avg") or trade.get("entry") or 0)
     if side == "long":
         trade["best"] = max(float(trade.get("best") or price), price)
     else:
         trade["best"] = min(float(trade.get("best") or price), price)
-    gain = move_pct(side, float(trade["avg"]), trade["best"]) * lev
+    gain = move_pct(side, avg, trade["best"]) * lev
     trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), gain)
     open_dollars = float(trade.get("margin") or 1) * runner * gain / 100
     if runner >= 1 and adds < len(ADD_MARGINS):
-        against = -move_pct(side, float(trade["entry"]), price)
+        against = -move_pct(side, float(trade.get("entry") or avg), price)
         if against >= ADD_AT_MARGIN_PCT[adds] / lev:
             add = ADD_MARGINS[adds]
             margin = float(trade["margin"])
-            avg = float(trade["avg"])
             trade["avg"] = (avg * margin + price * add) / (margin + add)
             trade["margin"] = margin + add
             trade["adds"] = adds + 1
             return "add", open_dollars
     if gain >= BANK_AT_PCT and not trade.get("partial_sent"):
-        trade["banked"] = float(trade["margin"]) * 0.5 * gain / 100
+        trade["banked"] = float(trade.get("margin") or 1) * 0.5 * gain / 100
         trade["runner"] = 0.5
         trade["partial_sent"] = True
         return "partial", open_dollars
@@ -180,11 +184,16 @@ def resolve(trade: dict, price: float, now: float):
 
 def main() -> None:
     ensure_data()
+    send_telegram("Paper follower process started.")
     open_rows = load_open()
-    offset = ingest(open_rows, 0, leverage_map())
-    catch_up(open_rows, market())
-    save_open(open_rows)
+    offset = 0
     closed = load_closed()
+    try:
+        offset = ingest(open_rows, 0, leverage_map())
+        catch_up(open_rows, market())
+        save_open(open_rows)
+    except Exception:
+        send_telegram("Paper follower startup error\n" + traceback.format_exc()[-500:])
     while True:
         try:
             prices = market()
