@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. One catch-up partial, and it stays up if startup fails."""
+"""Paper follower. Catch-up partial on start, open book every two hours."""
 
 import json
 import os
@@ -16,6 +16,7 @@ TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 PAIRS_URL = "https://fapi.bitunix.com/api/v1/futures/market/trading_pairs"
 POLL_SECONDS = 15
 HOLD_SECONDS = 6 * 60 * 60
+BOOK_SECONDS = 2 * 60 * 60
 ADD_MARGINS = (1.0, 3.0, 5.0)
 ADD_AT_MARGIN_PCT = (150.0, 300.0, 450.0)
 STOP_DOLLARS = 50.0
@@ -121,6 +122,24 @@ def move_pct(side: str, avg: float, price: float) -> float:
     return move if side == "long" else -move
 
 
+def book(open_rows: dict, prices: dict) -> None:
+    lines = []
+    green = red = 0
+    for trade in open_rows.values():
+        price = prices.get(trade.get("symbol"))
+        if not price:
+            continue
+        side = trade.get("side")
+        lev = float(trade.get("leverage") or DEFAULT_LEVERAGE)
+        gain = move_pct(side, float(trade.get("avg") or trade.get("entry") or 0), price) * lev
+        green += gain >= 0
+        red += gain < 0
+        lines.append((gain, f"{trade.get('symbol')} {side} {gain:+.0f}% ${trade.get('margin', 1):.0f}"))
+    lines.sort(reverse=True)
+    shown = "\n".join(text for _, text in lines[:12]) or "none"
+    send_telegram(f"PAPER BOOK {green} green, {red} red\n{shown}\nNot a live fill.")
+
+
 def catch_up(open_rows: dict, prices: dict) -> None:
     due = []
     for trade in open_rows.values():
@@ -140,10 +159,9 @@ def catch_up(open_rows: dict, prices: dict) -> None:
         trade["runner"] = 0.5
         trade["partial_sent"] = True
         due.append(f"{trade.get('symbol')} {side} at {price:.6g}, banked ${trade['banked']:.2f}")
-    if not due:
-        send_telegram(f"Paper follower restarted. {len(open_rows)} open. None are past the half sale yet.")
-        return
-    send_telegram("PAPER PARTIAL catch-up\n" + "\n".join(due[:20]) + "\nNot a live fill.")
+    if due:
+        send_telegram("PAPER PARTIAL catch-up\n" + "\n".join(due[:20]) + "\nNot a live fill.")
+    book(open_rows, prices)
 
 
 def resolve(trade: dict, price: float, now: float):
@@ -184,10 +202,10 @@ def resolve(trade: dict, price: float, now: float):
 
 def main() -> None:
     ensure_data()
-    send_telegram("Paper follower process started.")
     open_rows = load_open()
     offset = 0
     closed = load_closed()
+    last_book = time.time()
     try:
         offset = ingest(open_rows, 0, leverage_map())
         catch_up(open_rows, market())
@@ -218,6 +236,9 @@ def main() -> None:
                         handle.write(json.dumps(done) + "\n")
             save_open(open_rows)
             update_from_outcomes(closed)
+            if now - last_book >= BOOK_SECONDS:
+                book(open_rows, prices)
+                last_book = now
         except Exception as exc:
             log.error("Paper loop failed: %s", exc)
         time.sleep(POLL_SECONDS)
