@@ -234,7 +234,10 @@ def main() -> None:
                     continue
                 result, dollars = resolve(trade, price, now)
                 if result == "add":
-                    send_telegram(f"PAPER ADD {trade.get('symbol')} margin ${trade['margin']:.0f} at {price:.6g}. Not a live fill.")
+                    send_telegram(
+                        f"PAPER ADD {trade.get('symbol')} margin ${trade['margin']:.0f} at {price:.6g}. "
+                        f"Average now {float(trade['avg']):.6g}. Not a live fill."
+                    )
                 elif result == "partial":
                     send_telegram(f"PAPER PARTIAL {trade.get('symbol')} half off at {price:.6g}. Banked ${float(trade.get('banked') or 0):.2f}. Not a live fill.")
                 elif result == "second":
