@@ -129,6 +129,10 @@ def gain_now(trade: dict, price: float) -> float:
     return move_pct(trade.get("side"), float(trade.get("avg") or trade.get("entry") or 0), price) * lev
 
 
+def side_of(trade: dict) -> str:
+    return str(trade.get("side") or "").upper()
+
+
 def book(open_rows: dict, prices: dict) -> None:
     lines = []
     green = red = 0
@@ -139,7 +143,7 @@ def book(open_rows: dict, prices: dict) -> None:
         gain = gain_now(trade, price)
         green += gain >= 0
         red += gain < 0
-        lines.append((gain, f"{trade.get('symbol')} {trade.get('side')} {gain:+.0f}% ${trade.get('margin', 1):.0f}"))
+        lines.append((gain, f"{trade.get('symbol')} {side_of(trade)} {gain:+.0f}% ${trade.get('margin', 1):.0f}"))
     lines.sort(reverse=True)
     shown = "\n".join(text for _, text in lines[:12]) or "none"
     send_telegram(f"PAPER BOOK {green} green, {red} red\n{shown}\nNot a live fill.")
@@ -158,12 +162,12 @@ def catch_up(open_rows: dict, prices: dict) -> None:
             trade["runner"] = 0.25
             trade["partial_sent"] = True
             trade["second_sent"] = True
-            due.append(f"{trade.get('symbol')} second bank at {price:.6g}, {gain:.0f}%")
+            due.append(f"{trade.get('symbol')} {side_of(trade)} second bank at {price:.6g}, {gain:.0f}%")
         elif gain >= BANK_AT_PCT and not trade.get("partial_sent"):
             trade["banked"] = float(trade.get("margin") or 1) * 0.5 * gain / 100
             trade["runner"] = 0.5
             trade["partial_sent"] = True
-            due.append(f"{trade.get('symbol')} half off at {price:.6g}, {gain:.0f}%")
+            due.append(f"{trade.get('symbol')} {side_of(trade)} half off at {price:.6g}, {gain:.0f}%")
     if due:
         send_telegram("PAPER STAGGER catch-up\n" + "\n".join(due[:20]) + "\nNot a live fill.")
     book(open_rows, prices)
@@ -233,17 +237,18 @@ def main() -> None:
                 if not price:
                     continue
                 result, dollars = resolve(trade, price, now)
+                side = side_of(trade)
                 if result == "add":
                     send_telegram(
-                        f"PAPER ADD {trade.get('symbol')} margin ${trade['margin']:.0f} at {price:.6g}. "
+                        f"PAPER ADD {trade.get('symbol')} {side} margin ${trade['margin']:.0f} at {price:.6g}. "
                         f"Average now {float(trade['avg']):.6g}. Not a live fill."
                     )
                 elif result == "partial":
-                    send_telegram(f"PAPER PARTIAL {trade.get('symbol')} half off at {price:.6g}. Banked ${float(trade.get('banked') or 0):.2f}. Not a live fill.")
+                    send_telegram(f"PAPER PARTIAL {trade.get('symbol')} {side} half off at {price:.6g}. Banked ${float(trade.get('banked') or 0):.2f}. Not a live fill.")
                 elif result == "second":
-                    send_telegram(f"PAPER SECOND {trade.get('symbol')} another quarter off at {price:.6g}. Runner is 25%. Not a live fill.")
+                    send_telegram(f"PAPER SECOND {trade.get('symbol')} {side} another quarter off at {price:.6g}. Runner is 25%. Not a live fill.")
                 elif result:
-                    send_telegram(f"PAPER {result.upper()} {trade.get('symbol')} ${dollars:+.2f}. Not a live fill.")
+                    send_telegram(f"PAPER {result.upper()} {trade.get('symbol')} {side} ${dollars:+.2f}. Not a live fill.")
                     open_rows.pop(key, None)
                     done = dict(trade)
                     done.update({"result": result, "exit": price, "pnl": dollars, "closed_at": now})
