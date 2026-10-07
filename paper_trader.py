@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Confirms each open, then banks half at 100% leveraged profit."""
+"""Paper follower. Banks half at 100% and retries that message until it sends."""
 
 import json
 import os
@@ -103,14 +103,9 @@ def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
         entry = float(row["entry"])
         lev = leverage.get(symbol) or DEFAULT_LEVERAGE
         row.update({
-            "margin": 1.0,
-            "avg": entry,
-            "adds": 0,
-            "runner": 1.0,
-            "banked": 0.0,
-            "peak_pct": 0.0,
-            "best": entry,
-            "leverage": lev,
+            "margin": 1.0, "avg": entry, "adds": 0, "runner": 1.0,
+            "banked": 0.0, "peak_pct": 0.0, "best": entry, "leverage": lev,
+            "partial_sent": False,
         })
         open_rows[key] = row
         open_symbols.add(symbol)
@@ -121,7 +116,6 @@ def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
             f"Half sells if price reaches <b>{need:.6g}</b>\n"
             f"Not a live order."
         )
-        log.info("Paper tracking %s %s @ %s x%s", row.get("side"), symbol, entry, lev)
     return len(lines)
 
 
@@ -141,8 +135,7 @@ def resolve(trade: dict, price: float, now: float):
         trade["best"] = max(float(trade.get("best") or price), price)
     else:
         trade["best"] = min(float(trade.get("best") or price), price)
-    check_price = trade["best"]
-    gain = move_pct(side, float(trade["avg"]), check_price) * lev
+    gain = move_pct(side, float(trade["avg"]), trade["best"]) * lev
     trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), gain)
     open_dollars = float(trade.get("margin") or 1) * runner * gain / 100
     if runner >= 1 and adds < len(ADD_MARGINS):
@@ -155,12 +148,12 @@ def resolve(trade: dict, price: float, now: float):
             trade["margin"] = margin + add
             trade["adds"] = adds + 1
             return "add", open_dollars
-    if runner >= 1 and gain >= BANK_AT_PCT:
+    if gain >= BANK_AT_PCT and not trade.get("partial_sent"):
         bank = float(trade["margin"]) * 0.5 * gain / 100
-        trade["banked"] = float(trade.get("banked") or 0) + bank
+        trade["banked"] = bank
         trade["runner"] = 0.5
         return "partial", open_dollars
-    if runner < 1 and trade["peak_pct"] >= BANK_AT_PCT and gain <= trade["peak_pct"] * 0.5 and gain > 0:
+    if trade.get("partial_sent") and trade["peak_pct"] >= BANK_AT_PCT and gain <= trade["peak_pct"] * 0.5 and gain > 0:
         return "trail", open_dollars + float(trade.get("banked") or 0)
     if runner >= 1 and open_dollars <= -STOP_DOLLARS:
         return "stop", open_dollars
@@ -170,33 +163,19 @@ def resolve(trade: dict, price: float, now: float):
 
 
 def write_dashboard(closed: list) -> str:
-    by_source = {}
-    for row in closed[-200:]:
-        bucket = by_source.setdefault(row.get("source") or "?", {"n": 0, "win": 0, "sum": 0.0})
-        bucket["n"] += 1
-        bucket["sum"] += float(row.get("pnl") or 0)
-        if float(row.get("pnl") or 0) > 0:
-            bucket["win"] += 1
     lines = ["Paper scoreboard (last 200 closes)"]
-    for source, bucket in sorted(by_source.items()):
-        win_rate = 100 * bucket["win"] / bucket["n"] if bucket["n"] else 0
-        avg = bucket["sum"] / bucket["n"] if bucket["n"] else 0
-        lines.append(f"{source}: {bucket['n']} closed, {win_rate:.0f}% green, avg ${avg:+.2f}")
-    if len(lines) == 1:
+    if not closed:
         lines.append("No closed paper trades yet.")
-    text = "\n".join(lines)
-    DASHBOARD_PATH.write_text(text + "\n", encoding="utf-8")
-    return text
+    DASHBOARD_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return "\n".join(lines)
 
 
 def main() -> None:
     ensure_data()
-    log.info("Paper trader starting, signals %s", SIGNALS_PATH)
-    send_telegram("Paper follower is running. A tracked trade sends PAPER TRACKING, then PAPER PARTIAL at 100%.")
+    send_telegram("Paper follower restarted. A trade already past the half-sale price will send the partial now.")
     open_rows = load_open()
     offset = 0
     closed = load_closed()
-    last_summary = time.time()
     while True:
         try:
             prices = market()
@@ -211,39 +190,33 @@ def main() -> None:
                     send_telegram(
                         f"\U0001f4c4 <b>PAPER ADD</b> {trade.get('symbol')}\n"
                         f"{trade.get('side')} add {int(trade['adds'])}, margin now ${trade['margin']:.0f}\n"
-                        f"Average {float(trade['avg']):.6g}, price {price:.6g}\n"
-                        f"Not a live fill."
+                        f"Average {float(trade['avg']):.6g}, price {price:.6g}\nNot a live fill."
                     )
                     continue
                 if result == "partial":
-                    send_telegram(
+                    sent = send_telegram(
                         f"\U0001f4c4 <b>PAPER PARTIAL</b> {trade.get('symbol')}\n"
                         f"Sold half around 100% leveraged profit at {float(trade.get('best') or price):.6g}\n"
-                        f"Banked ${float(trade.get('banked') or 0):.2f}. Half is still riding.\n"
-                        f"Not a live fill."
+                        f"Banked ${float(trade.get('banked') or 0):.2f}. Half is still riding.\nNot a live fill."
                     )
+                    if sent:
+                        trade["partial_sent"] = True
                     continue
                 if not result:
                     continue
-                open_rows.pop(key, None)
-                done = dict(trade)
-                done.update({"result": result, "exit": price, "pnl": dollars, "closed_at": now})
-                closed.append(done)
-                with CLOSED_PATH.open("a", encoding="utf-8") as handle:
-                    handle.write(json.dumps(done) + "\n")
-                send_telegram(
+                if send_telegram(
                     f"\U0001f4c4 <b>PAPER {result.upper()}</b> {trade.get('symbol')}\n"
                     f"{trade.get('side')} from {float(trade['entry']):.6g} to {price:.6g}\n"
-                    f"Result <b>${dollars:+.2f}</b>\n"
-                    f"Not a live fill."
-                )
+                    f"Result <b>${dollars:+.2f}</b>\nNot a live fill."
+                ):
+                    open_rows.pop(key, None)
+                    done = dict(trade)
+                    done.update({"result": result, "exit": price, "pnl": dollars, "closed_at": now})
+                    closed.append(done)
+                    with CLOSED_PATH.open("a", encoding="utf-8") as handle:
+                        handle.write(json.dumps(done) + "\n")
             save_open(open_rows)
             update_from_outcomes(closed)
-            if now - last_summary >= SUMMARY_SECONDS:
-                send_telegram(write_dashboard(closed))
-                last_summary = now
-            else:
-                write_dashboard(closed)
         except Exception as exc:
             log.error("Paper loop failed: %s", exc)
         time.sleep(POLL_SECONDS)
