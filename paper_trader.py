@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Banks half at 100% and retries that message until it sends."""
+"""Paper follower. Sends one catch-up partial for trades already past the half sale."""
 
 import json
 import os
@@ -15,7 +15,6 @@ TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 PAIRS_URL = "https://fapi.bitunix.com/api/v1/futures/market/trading_pairs"
 POLL_SECONDS = 15
 HOLD_SECONDS = 6 * 60 * 60
-SUMMARY_SECONDS = 6 * 60 * 60
 ADD_MARGINS = (1.0, 3.0, 5.0)
 ADD_AT_MARGIN_PCT = (150.0, 300.0, 450.0)
 STOP_DOLLARS = 50.0
@@ -24,7 +23,6 @@ DEFAULT_LEVERAGE = 20.0
 DATA_DIR = Path(os.getenv("BOT_DATA_DIR", "data"))
 OPEN_PATH = DATA_DIR / "open_paper.json"
 CLOSED_PATH = DATA_DIR / "closed_paper.jsonl"
-DASHBOARD_PATH = DATA_DIR / "dashboard.txt"
 
 log = file_logger("bitunix-paper")
 _leverage = {}
@@ -109,13 +107,6 @@ def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
         })
         open_rows[key] = row
         open_symbols.add(symbol)
-        need = entry * (1 + BANK_AT_PCT / lev / 100) if row.get("side") == "long" else entry * (1 - BANK_AT_PCT / lev / 100)
-        send_telegram(
-            f"\U0001f4c4 <b>PAPER TRACKING</b> {symbol}\n"
-            f"{str(row.get('side')).title()} from {entry:.6g} at {lev:.0f}x\n"
-            f"Half sells if price reaches <b>{need:.6g}</b>\n"
-            f"Not a live order."
-        )
     return len(lines)
 
 
@@ -124,6 +115,31 @@ def move_pct(side: str, avg: float, price: float) -> float:
         return 0.0
     move = (price - avg) / avg * 100
     return move if side == "long" else -move
+
+
+def catch_up(open_rows: dict, prices: dict) -> None:
+    due = []
+    for trade in open_rows.values():
+        if trade.get("partial_sent"):
+            continue
+        price = prices.get(trade.get("symbol"))
+        if not price:
+            continue
+        side = trade.get("side")
+        lev = float(trade.get("leverage") or DEFAULT_LEVERAGE)
+        gain = move_pct(side, float(trade["avg"]), price) * lev
+        if gain < BANK_AT_PCT:
+            continue
+        trade["best"] = price
+        trade["peak_pct"] = gain
+        trade["banked"] = float(trade.get("margin") or 1) * 0.5 * gain / 100
+        trade["runner"] = 0.5
+        trade["partial_sent"] = True
+        due.append(f"{trade.get('symbol')} {side} at {price:.6g}, banked ${trade['banked']:.2f}")
+    if not due:
+        send_telegram(f"Paper follower restarted. {len(open_rows)} open. None are past the half sale yet.")
+        return
+    send_telegram("PAPER PARTIAL catch-up\n" + "\n".join(due) + "\nNot a live fill.")
 
 
 def resolve(trade: dict, price: float, now: float):
@@ -149,11 +165,11 @@ def resolve(trade: dict, price: float, now: float):
             trade["adds"] = adds + 1
             return "add", open_dollars
     if gain >= BANK_AT_PCT and not trade.get("partial_sent"):
-        bank = float(trade["margin"]) * 0.5 * gain / 100
-        trade["banked"] = bank
+        trade["banked"] = float(trade["margin"]) * 0.5 * gain / 100
         trade["runner"] = 0.5
+        trade["partial_sent"] = True
         return "partial", open_dollars
-    if trade.get("partial_sent") and trade["peak_pct"] >= BANK_AT_PCT and gain <= trade["peak_pct"] * 0.5 and gain > 0:
+    if trade.get("partial_sent") and gain <= trade["peak_pct"] * 0.5 and gain > 0:
         return "trail", open_dollars + float(trade.get("banked") or 0)
     if runner >= 1 and open_dollars <= -STOP_DOLLARS:
         return "stop", open_dollars
@@ -162,19 +178,12 @@ def resolve(trade: dict, price: float, now: float):
     return None, open_dollars
 
 
-def write_dashboard(closed: list) -> str:
-    lines = ["Paper scoreboard (last 200 closes)"]
-    if not closed:
-        lines.append("No closed paper trades yet.")
-    DASHBOARD_PATH.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    return "\n".join(lines)
-
-
 def main() -> None:
     ensure_data()
-    send_telegram("Paper follower restarted. A trade already past the half-sale price will send the partial now.")
     open_rows = load_open()
-    offset = 0
+    offset = ingest(open_rows, 0, leverage_map())
+    catch_up(open_rows, market())
+    save_open(open_rows)
     closed = load_closed()
     while True:
         try:
@@ -187,28 +196,11 @@ def main() -> None:
                     continue
                 result, dollars = resolve(trade, price, now)
                 if result == "add":
-                    send_telegram(
-                        f"\U0001f4c4 <b>PAPER ADD</b> {trade.get('symbol')}\n"
-                        f"{trade.get('side')} add {int(trade['adds'])}, margin now ${trade['margin']:.0f}\n"
-                        f"Average {float(trade['avg']):.6g}, price {price:.6g}\nNot a live fill."
-                    )
-                    continue
-                if result == "partial":
-                    sent = send_telegram(
-                        f"\U0001f4c4 <b>PAPER PARTIAL</b> {trade.get('symbol')}\n"
-                        f"Sold half around 100% leveraged profit at {float(trade.get('best') or price):.6g}\n"
-                        f"Banked ${float(trade.get('banked') or 0):.2f}. Half is still riding.\nNot a live fill."
-                    )
-                    if sent:
-                        trade["partial_sent"] = True
-                    continue
-                if not result:
-                    continue
-                if send_telegram(
-                    f"\U0001f4c4 <b>PAPER {result.upper()}</b> {trade.get('symbol')}\n"
-                    f"{trade.get('side')} from {float(trade['entry']):.6g} to {price:.6g}\n"
-                    f"Result <b>${dollars:+.2f}</b>\nNot a live fill."
-                ):
+                    send_telegram(f"PAPER ADD {trade.get('symbol')} margin ${trade['margin']:.0f} at {price:.6g}. Not a live fill.")
+                elif result == "partial":
+                    send_telegram(f"PAPER PARTIAL {trade.get('symbol')} at {price:.6g}. Banked ${float(trade.get('banked') or 0):.2f}. Not a live fill.")
+                elif result:
+                    send_telegram(f"PAPER {result.upper()} {trade.get('symbol')} ${dollars:+.2f}. Not a live fill.")
                     open_rows.pop(key, None)
                     done = dict(trade)
                     done.update({"result": result, "exit": price, "pnl": dollars, "closed_at": now})
