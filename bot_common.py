@@ -31,12 +31,12 @@ def file_logger(name: str) -> logging.Logger:
     return logger
 
 
-def send_telegram(text: str) -> None:
+def send_telegram(text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print(text)
-        return
+        return True
     try:
-        requests.post(
+        response = requests.post(
             f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
             json={
                 "chat_id": TELEGRAM_CHAT_ID,
@@ -46,8 +46,10 @@ def send_telegram(text: str) -> None:
             },
             timeout=10,
         )
+        return response.ok
     except Exception as exc:
         logging.getLogger("bitunix-common").error("Telegram send failed: %s", exc)
+        return False
 
 
 def emit_signal(source: str, symbol: str, side: str, entry: float, stop_pct: float, target_pct: float, note: str = "") -> bool:
