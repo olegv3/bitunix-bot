@@ -16,7 +16,7 @@ TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 PAIRS_URL = "https://fapi.bitunix.com/api/v1/futures/market/trading_pairs"
 POLL_SECONDS = 15
 HOLD_SECONDS = 6 * 60 * 60
-BOOK_SECONDS = 2 * 60 * 60
+BOOK_SECONDS = 60 * 60
 ADD_MARGINS = (1.0, 3.0, 5.0)
 ADD_AT_MARGIN_PCT = (150.0, 300.0, 450.0)
 STOP_DOLLARS = 50.0
@@ -145,8 +145,11 @@ def book(open_rows: dict, prices: dict) -> None:
         red += gain < 0
         lines.append((gain, f"{trade.get('symbol')} {side_of(trade)} {gain:+.0f}% ${trade.get('margin', 1):.0f}"))
     lines.sort(reverse=True)
-    shown = "\n".join(text for _, text in lines[:12]) or "none"
-    send_telegram(f"PAPER BOOK {green} green, {red} red\n{shown}\nNot a live fill.")
+    texts = [text for _, text in lines] or ["none"]
+    chunks = [texts[i:i + 40] for i in range(0, len(texts), 40)]
+    for index, chunk in enumerate(chunks, start=1):
+        header = f"PAPER BOOK {green} green, {red} red" if index == 1 else f"PAPER BOOK continued {index}/{len(chunks)}"
+        send_telegram(header + "\n" + "\n".join(chunk) + "\nNot a live fill.")
 
 
 def catch_up(open_rows: dict, prices: dict) -> None:
