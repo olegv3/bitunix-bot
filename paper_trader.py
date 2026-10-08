@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Banks half at 100%, another quarter at 250%, then trails."""
+"""Paper follower. Trail uses the current price, not the best price."""
 
 import json
 import os
@@ -186,9 +186,10 @@ def resolve(trade: dict, price: float, now: float):
         trade["best"] = max(float(trade.get("best") or price), price)
     else:
         trade["best"] = min(float(trade.get("best") or price), price)
-    gain = gain_now(trade, trade["best"])
-    trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), gain)
-    open_dollars = float(trade.get("margin") or 1) * runner * gain / 100
+    peak = gain_now(trade, trade["best"])
+    current = gain_now(trade, price)
+    trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), peak)
+    open_dollars = float(trade.get("margin") or 1) * runner * current / 100
     if runner >= 1 and adds < len(ADD_MARGINS):
         against = -move_pct(side, float(trade.get("entry") or avg), price)
         if against >= ADD_AT_MARGIN_PCT[adds] / lev:
@@ -198,18 +199,18 @@ def resolve(trade: dict, price: float, now: float):
             trade["margin"] = margin + add
             trade["adds"] = adds + 1
             return "add", open_dollars
-    if gain >= SECOND_BANK_PCT and not trade.get("second_sent"):
-        trade["banked"] = float(trade.get("banked") or 0) + float(trade.get("margin") or 1) * 0.25 * gain / 100
+    if current >= SECOND_BANK_PCT and not trade.get("second_sent"):
+        trade["banked"] = float(trade.get("banked") or 0) + float(trade.get("margin") or 1) * 0.25 * current / 100
         trade["runner"] = 0.25
         trade["partial_sent"] = True
         trade["second_sent"] = True
         return "second", open_dollars
-    if gain >= BANK_AT_PCT and not trade.get("partial_sent"):
-        trade["banked"] = float(trade.get("margin") or 1) * 0.5 * gain / 100
+    if current >= BANK_AT_PCT and not trade.get("partial_sent"):
+        trade["banked"] = float(trade.get("margin") or 1) * 0.5 * current / 100
         trade["runner"] = 0.5
         trade["partial_sent"] = True
         return "partial", open_dollars
-    if trade.get("partial_sent") and trade["peak_pct"] >= BANK_AT_PCT and gain <= trade["peak_pct"] * TRAIL_KEEP and gain > 0:
+    if trade.get("partial_sent") and trade["peak_pct"] >= BANK_AT_PCT and current <= trade["peak_pct"] * TRAIL_KEEP and current > 0:
         return "trail", open_dollars + float(trade.get("banked") or 0)
     if runner >= 1 and open_dollars <= -STOP_DOLLARS:
         return "stop", open_dollars
