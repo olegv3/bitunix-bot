@@ -35,21 +35,23 @@ def send_telegram(text: str) -> bool:
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         print(text)
         return True
-    try:
-        response = requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage",
-            json={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": text,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True,
-            },
-            timeout=10,
-        )
-        return response.ok
-    except Exception as exc:
-        logging.getLogger("bitunix-common").error("Telegram send failed: %s", exc)
-        return False
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+    for attempt in range(3):
+        try:
+            response = requests.post(url, json=payload, timeout=20)
+            if response.ok:
+                return True
+            logging.getLogger("bitunix-common").error("Telegram send failed: %s", response.status_code)
+        except Exception as exc:
+            logging.getLogger("bitunix-common").error("Telegram send failed: %s", exc)
+        time.sleep(2)
+    return False
 
 
 def emit_signal(source: str, symbol: str, side: str, entry: float, stop_pct: float, target_pct: float, note: str = "") -> bool:
