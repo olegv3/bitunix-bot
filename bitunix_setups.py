@@ -134,7 +134,7 @@ def open_paper(symbol: str, side: str, price: float, now: float) -> None:
     send_telegram(
         f"\U0001f4c4 <b>PAPER OPEN</b> {symbol}\n"
         f"{side.title()} from <b>{price:.6g}</b> with $1\n"
-        f"Opened on the watching alert. Half off around 100% leveraged profit.\n"
+        f"Opened on the watching alert. Full size trails after 100% leveraged profit.\n"
         f"Not a live order."
     )
 
@@ -249,7 +249,7 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
     send_telegram(
         f"\U0001f4c4 <b>PAPER OPEN</b> {symbol}\n"
         f"{side.title()} from <b>{price:.6g}</b> with $1\n"
-        f"Same ladder as a late trade. Half off around 100% leveraged profit.\n"
+        f"Full size trails after 100% leveraged profit.\n"
         f"Not a live order."
     )
 
