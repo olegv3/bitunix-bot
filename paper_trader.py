@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. At 100% the full position trails. No half sale."""
+"""Paper follower. Wallet ignores trades opened before it started."""
 
 import json
 import os
@@ -26,6 +26,7 @@ BANK_AT_PCT = 100.0
 TRAIL_KEEP = 0.7
 DEFAULT_LEVERAGE = 20.0
 START_CASH = 1000.0
+WALLET_EPOCH = 2
 DATA_DIR = Path(os.getenv("BOT_DATA_DIR", "data"))
 OPEN_PATH = DATA_DIR / "open_paper.json"
 CLOSED_PATH = DATA_DIR / "closed_paper.jsonl"
@@ -62,14 +63,18 @@ def save_open(rows: dict) -> None:
     OPEN_PATH.write_text(json.dumps(rows), encoding="utf-8")
 
 
+def fresh_wallet() -> dict:
+    return {"start": START_CASH, "realized": 0.0, "closes": 0, "started": time.time(), "epoch": WALLET_EPOCH}
+
+
 def load_wallet() -> dict:
     try:
         wallet = json.loads(WALLET_PATH.read_text(encoding="utf-8"))
-        if wallet.get("start") == START_CASH:
+        if wallet.get("epoch") == WALLET_EPOCH and wallet.get("start") == START_CASH:
             return wallet
     except (OSError, json.JSONDecodeError):
         pass
-    return {"start": START_CASH, "realized": 0.0, "closes": 0, "started": time.time()}
+    return fresh_wallet()
 
 
 def save_wallet(wallet: dict) -> None:
@@ -80,6 +85,10 @@ def save_wallet(wallet: dict) -> None:
 def wallet_line(wallet: dict) -> str:
     balance = START_CASH + float(wallet.get("realized") or 0)
     return f"PAPER WALLET ${balance:.2f} from ${START_CASH:.0f}. Realized ${float(wallet.get('realized') or 0):+.2f}."
+
+
+def counts_for_wallet(trade: dict, wallet: dict) -> bool:
+    return float(trade.get("ts") or 0) >= float(wallet.get("started") or 0)
 
 
 def leverage_map() -> dict:
@@ -185,6 +194,8 @@ def book(open_rows: dict, prices: dict, wallet: dict) -> None:
     green = red = 0
     open_pnl = 0.0
     for trade in open_rows.values():
+        if not counts_for_wallet(trade, wallet):
+            continue
         price = prices.get(trade.get("symbol"))
         if not price:
             continue
@@ -211,7 +222,7 @@ def catch_up(open_rows: dict, prices: dict, wallet: dict) -> None:
             continue
         gain = gain_now(trade, price)
         trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), gain)
-        if gain >= BANK_AT_PCT and not trade.get("trail_armed"):
+        if gain >= BANK_AT_PCT and not trade.get("trail_armed") and counts_for_wallet(trade, wallet):
             trade["trail_armed"] = True
             due.append(f"{trade.get('symbol')} {side_of(trade)} trail armed at {gain:.0f}%")
     if due:
@@ -265,7 +276,7 @@ def main() -> None:
     wallet = load_wallet()
     save_wallet(wallet)
     last_book = time.time()
-    send_telegram(wallet_line(wallet) + " Starts now. Older closes are not included. Not a live fill.")
+    send_telegram(wallet_line(wallet) + " Reset. Trades opened before this do not count. Not a live fill.")
     try:
         offset = ingest(open_rows, 0, leverage_map())
         catch_up(open_rows, market(), wallet)
@@ -290,18 +301,23 @@ def main() -> None:
                         f"Average now {float(trade['avg']):.6g}. Not a live fill."
                     )
                 elif result == "armed":
-                    send_telegram(
-                        f"PAPER TRAIL ARMED {trade.get('symbol')} {side} at {price:.6g}. "
-                        f"Full size stays on. Closes if it gives back to 70% of the peak. Not a live fill."
-                    )
+                    if counts_for_wallet(trade, wallet):
+                        send_telegram(
+                            f"PAPER TRAIL ARMED {trade.get('symbol')} {side} at {price:.6g}. "
+                            f"Full size stays on. Closes if it gives back to 70% of the peak. Not a live fill."
+                        )
                 elif result:
-                    wallet["realized"] = float(wallet.get("realized") or 0) + dollars
-                    wallet["closes"] = int(wallet.get("closes") or 0) + 1
-                    save_wallet(wallet)
-                    send_telegram(f"PAPER {result.upper()} {trade.get('symbol')} {side} ${dollars:+.2f}. {wallet_line(wallet)} Not a live fill.")
+                    counted = counts_for_wallet(trade, wallet)
+                    if counted:
+                        wallet["realized"] = float(wallet.get("realized") or 0) + dollars
+                        wallet["closes"] = int(wallet.get("closes") or 0) + 1
+                        save_wallet(wallet)
+                        send_telegram(f"PAPER {result.upper()} {trade.get('symbol')} {side} ${dollars:+.2f}. {wallet_line(wallet)} Not a live fill.")
+                    else:
+                        send_telegram(f"PAPER {result.upper()} {trade.get('symbol')} {side} ${dollars:+.2f}. Old trade, not counted. Not a live fill.")
                     open_rows.pop(key, None)
                     done = dict(trade)
-                    done.update({"result": result, "exit": price, "pnl": dollars, "closed_at": now})
+                    done.update({"result": result, "exit": price, "pnl": dollars, "closed_at": now, "counted": counted})
                     closed.append(done)
                     with CLOSED_PATH.open("a", encoding="utf-8") as handle:
                         handle.write(json.dumps(done) + "\n")
