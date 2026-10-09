@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Adds wait longer when Bitcoin is trending against the trade."""
+"""Paper follower. A banked winner stays open. A loser times out at 6 hours."""
 
 import json
 import os
@@ -268,7 +268,8 @@ def resolve(trade: dict, price: float, now: float, tape: float):
         return "trail", open_dollars + float(trade.get("banked") or 0)
     if runner >= 1 and open_dollars <= -STOP_DOLLARS:
         return "stop", open_dollars
-    if now - float(trade.get("ts") or now) >= HOLD_SECONDS:
+    age = now - float(trade.get("ts") or now)
+    if age >= HOLD_SECONDS and (current <= 0 or not trade.get("partial_sent")):
         return "timeout", open_dollars + float(trade.get("banked") or 0)
     return None, open_dollars
 
