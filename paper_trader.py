@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Trail uses the current price, not the best price."""
+"""Paper follower. Adds stop at $5."""
 
 import json
 import os
@@ -17,8 +17,8 @@ PAIRS_URL = "https://fapi.bitunix.com/api/v1/futures/market/trading_pairs"
 POLL_SECONDS = 15
 HOLD_SECONDS = 6 * 60 * 60
 BOOK_SECONDS = 60 * 60
-ADD_MARGINS = (1.0, 3.0, 5.0)
-ADD_AT_MARGIN_PCT = (150.0, 300.0, 450.0)
+ADD_MARGINS = (1.0, 3.0)
+ADD_AT_MARGIN_PCT = (150.0, 300.0)
 STOP_DOLLARS = 50.0
 BANK_AT_PCT = 100.0
 SECOND_BANK_PCT = 250.0
