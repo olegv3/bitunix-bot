@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watching alerts open a paper trade at the alert price. Not a live order."""
+"""Watching alerts. A hard Bitcoin day asks for a deeper move."""
 
 import logging
 import os
@@ -25,6 +25,7 @@ MIN_VOLUME_USDT = 200000
 SHORT_DAY_PCT = 8.0
 LONG_DAY_PCT = 12.0
 LONG_OFF_LOW_PCT = 0.4
+BTC_TREND_PCT = 3.0
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
 
@@ -138,7 +139,7 @@ def open_paper(symbol: str, side: str, price: float, now: float) -> None:
     )
 
 
-def check(symbol: str, price: float, now: float, day_high: float, day_low: float, day_open: float) -> None:
+def check(symbol: str, price: float, now: float, day_high: float, day_low: float, day_open: float, btc_change: float) -> None:
     follow_up(symbol, price)
     rows = history[symbol]
     rows.append((now, price))
@@ -159,25 +160,34 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
     near_high = day_high and (day_high - price) / day_high * 100 <= 1.5
     off_low = day_low and (price - day_low) / day_low * 100
     near_low = day_low and off_low <= 1.5 and off_low >= LONG_OFF_LOW_PCT
+    long_needed = LONG_DAY_PCT + (6 if btc_change <= -BTC_TREND_PCT else 0)
+    short_needed = SHORT_DAY_PCT + (4 if btc_change >= BTC_TREND_PCT else 0)
+    cautious = ""
+    if btc_change <= -BTC_TREND_PCT:
+        cautious = f"Bitcoin is down {abs(btc_change):.1f}%. Waiting for a deeper drop.\n"
+    elif btc_change >= BTC_TREND_PCT:
+        cautious = f"Bitcoin is up {btc_change:.1f}%. Waiting for a bigger push.\n"
 
     if now - last_candidate.get(symbol, 0) >= COOLDOWN_SECONDS:
-        if near_high and day_change >= SHORT_DAY_PCT:
+        if near_high and day_change >= short_needed:
             last_candidate[symbol] = now
             send_telegram(
                 f"\U0001f7e0 <b>WATCHING SHORT</b> {symbol}\n"
                 f"Up <b>{day_change:.1f}%</b> today, price {price:.6g}\n"
                 f"Day high {day_high:.6g}. Still near the high\n"
+                f"{cautious}"
                 f"Not an order\n"
                 f"{chart_link(symbol)}\n"
                 f"{ta_snapshot(symbol, price)}"
             )
             open_paper(symbol, "short", price, now)
-        elif near_low and day_change <= -LONG_DAY_PCT:
+        elif near_low and day_change <= -long_needed:
             last_candidate[symbol] = now
             send_telegram(
                 f"\U0001f7e2 <b>WATCHING LONG</b> {symbol}\n"
                 f"Down <b>{abs(day_change):.1f}%</b> today, price {price:.6g}\n"
                 f"Day low {day_low:.6g}. Off the low, not still falling\n"
+                f"{cautious}"
                 f"Not an order\n"
                 f"{chart_link(symbol)}\n"
                 f"{ta_snapshot(symbol, price)}"
@@ -251,8 +261,18 @@ def main() -> None:
         try:
             rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
             now = time.time()
+            btc_change = 0.0
+            for row in rows:
+                if row.get("symbol") == "BTCUSDT":
+                    try:
+                        last = float(row.get("lastPrice") or row.get("last") or 0)
+                        opened = float(row.get("open") or 0)
+                        btc_change = (last - opened) / opened * 100 if opened else 0.0
+                    except (TypeError, ValueError):
+                        btc_change = 0.0
+                    break
             if now - last_beat >= 1800:
-                log.info("Setup heartbeat open=%s held=%s dead=%s", len(open_setups), scorecard["held"], scorecard["dead"])
+                log.info("Setup heartbeat open=%s held=%s dead=%s btc=%.2f", len(open_setups), scorecard["held"], scorecard["dead"], btc_change)
                 last_beat = now
             for row in rows:
                 symbol = row.get("symbol")
@@ -267,7 +287,7 @@ def main() -> None:
                 except (TypeError, ValueError):
                     continue
                 if price > 0 and volume >= MIN_VOLUME_USDT:
-                    check(symbol, price, now, day_high, day_low, day_open)
+                    check(symbol, price, now, day_high, day_low, day_open, btc_change)
         except Exception as exc:
             log.error("Ticker fetch failed: %s", exc)
         time.sleep(POLL_INTERVAL)
