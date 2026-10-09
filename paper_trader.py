@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Wallet starts at $1000 from this deploy."""
+"""Paper follower. Adds wait longer when Bitcoin is trending against the trade."""
 
 import json
 import os
@@ -19,6 +19,8 @@ HOLD_SECONDS = 6 * 60 * 60
 BOOK_SECONDS = 60 * 60
 ADD_MARGINS = (1.0, 3.0)
 ADD_AT_MARGIN_PCT = (150.0, 300.0)
+CAUTIOUS_ADD_AT = (250.0, 450.0)
+BTC_TREND_PCT = 3.0
 STOP_DOLLARS = 50.0
 BANK_AT_PCT = 100.0
 SECOND_BANK_PCT = 250.0
@@ -33,6 +35,8 @@ WALLET_PATH = DATA_DIR / "paper_wallet.json"
 log = file_logger("bitunix-paper")
 _leverage = {}
 _leverage_at = 0.0
+_tape = 0.0
+_tape_at = 0.0
 
 
 def load_open() -> dict:
@@ -113,6 +117,28 @@ def market() -> dict:
     return prices
 
 
+def tape_change() -> float:
+    global _tape, _tape_at
+    if time.time() - _tape_at < 60:
+        return _tape
+    try:
+        rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
+    except requests.RequestException:
+        return _tape
+    for row in rows:
+        if row.get("symbol") != "BTCUSDT":
+            continue
+        try:
+            last = float(row.get("lastPrice") or row.get("last") or 0)
+            opened = float(row.get("open") or 0)
+        except (TypeError, ValueError):
+            break
+        _tape = (last - opened) / opened * 100 if opened else 0.0
+        _tape_at = time.time()
+        break
+    return _tape
+
+
 def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
     if not SIGNALS_PATH.exists():
         return offset
@@ -171,11 +197,10 @@ def book(open_rows: dict, prices: dict, wallet: dict) -> None:
         lines.append((gain, f"{trade.get('symbol')} {side_of(trade)} {gain:+.0f}% ${trade.get('margin', 1):.0f}"))
     lines.sort(reverse=True)
     texts = [text for _, text in lines] or ["none"]
-    balance = START_CASH + float(wallet.get("realized") or 0)
     chunks = [texts[i:i + 40] for i in range(0, len(texts), 40)]
     for index, chunk in enumerate(chunks, start=1):
         header = f"PAPER BOOK {green} green, {red} red" if index == 1 else f"PAPER BOOK continued {index}/{len(chunks)}"
-        extra = f"\n{wallet_line(wallet)} Open marks ${open_pnl:+.2f}. Equity ${balance + open_pnl:.2f}." if index == 1 else ""
+        extra = f"\n{wallet_line(wallet)} Open marks ${open_pnl:+.2f}. Equity ${START_CASH + float(wallet.get('realized') or 0) + open_pnl:.2f}." if index == 1 else ""
         send_telegram(header + extra + "\n" + "\n".join(chunk) + "\nNot a live fill.")
 
 
@@ -203,7 +228,7 @@ def catch_up(open_rows: dict, prices: dict, wallet: dict) -> None:
     book(open_rows, prices, wallet)
 
 
-def resolve(trade: dict, price: float, now: float):
+def resolve(trade: dict, price: float, now: float, tape: float):
     side = trade.get("side")
     lev = float(trade.get("leverage") or DEFAULT_LEVERAGE)
     adds = int(trade.get("adds") or 0)
@@ -217,9 +242,11 @@ def resolve(trade: dict, price: float, now: float):
     current = gain_now(trade, price)
     trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), peak)
     open_dollars = float(trade.get("margin") or 1) * runner * current / 100
+    cautious = (side == "long" and tape <= -BTC_TREND_PCT) or (side == "short" and tape >= BTC_TREND_PCT)
+    add_at = CAUTIOUS_ADD_AT if cautious else ADD_AT_MARGIN_PCT
     if runner >= 1 and adds < len(ADD_MARGINS):
         against = -move_pct(side, float(trade.get("entry") or avg), price)
-        if against >= ADD_AT_MARGIN_PCT[adds] / lev:
+        if against >= add_at[adds] / lev:
             add = ADD_MARGINS[adds]
             margin = float(trade["margin"])
             trade["avg"] = (avg * margin + price * add) / (margin + add)
@@ -264,13 +291,14 @@ def main() -> None:
     while True:
         try:
             prices = market()
+            tape = tape_change()
             offset = ingest(open_rows, offset, leverage_map())
             now = time.time()
             for key, trade in list(open_rows.items()):
                 price = prices.get(trade.get("symbol"))
                 if not price:
                     continue
-                result, dollars = resolve(trade, price, now)
+                result, dollars = resolve(trade, price, now, tape)
                 side = side_of(trade)
                 if result == "add":
                     send_telegram(
