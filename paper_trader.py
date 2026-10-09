@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Adds stop at $5."""
+"""Paper follower. Wallet starts at $1000 from this deploy."""
 
 import json
 import os
@@ -24,9 +24,11 @@ BANK_AT_PCT = 100.0
 SECOND_BANK_PCT = 250.0
 TRAIL_KEEP = 0.7
 DEFAULT_LEVERAGE = 20.0
+START_CASH = 1000.0
 DATA_DIR = Path(os.getenv("BOT_DATA_DIR", "data"))
 OPEN_PATH = DATA_DIR / "open_paper.json"
 CLOSED_PATH = DATA_DIR / "closed_paper.jsonl"
+WALLET_PATH = DATA_DIR / "paper_wallet.json"
 
 log = file_logger("bitunix-paper")
 _leverage = {}
@@ -55,6 +57,26 @@ def load_closed() -> list:
 def save_open(rows: dict) -> None:
     ensure_data()
     OPEN_PATH.write_text(json.dumps(rows), encoding="utf-8")
+
+
+def load_wallet() -> dict:
+    try:
+        wallet = json.loads(WALLET_PATH.read_text(encoding="utf-8"))
+        if wallet.get("start") == START_CASH:
+            return wallet
+    except (OSError, json.JSONDecodeError):
+        pass
+    return {"start": START_CASH, "realized": 0.0, "closes": 0, "started": time.time()}
+
+
+def save_wallet(wallet: dict) -> None:
+    ensure_data()
+    WALLET_PATH.write_text(json.dumps(wallet), encoding="utf-8")
+
+
+def wallet_line(wallet: dict) -> str:
+    balance = START_CASH + float(wallet.get("realized") or 0)
+    return f"PAPER WALLET ${balance:.2f} from ${START_CASH:.0f}. Realized ${float(wallet.get('realized') or 0):+.2f}."
 
 
 def leverage_map() -> dict:
@@ -133,9 +155,10 @@ def side_of(trade: dict) -> str:
     return str(trade.get("side") or "").upper()
 
 
-def book(open_rows: dict, prices: dict) -> None:
+def book(open_rows: dict, prices: dict, wallet: dict) -> None:
     lines = []
     green = red = 0
+    open_pnl = 0.0
     for trade in open_rows.values():
         price = prices.get(trade.get("symbol"))
         if not price:
@@ -143,16 +166,20 @@ def book(open_rows: dict, prices: dict) -> None:
         gain = gain_now(trade, price)
         green += gain >= 0
         red += gain < 0
+        open_pnl += float(trade.get("margin") or 1) * float(trade.get("runner") or 1) * gain / 100
+        open_pnl += float(trade.get("banked") or 0)
         lines.append((gain, f"{trade.get('symbol')} {side_of(trade)} {gain:+.0f}% ${trade.get('margin', 1):.0f}"))
     lines.sort(reverse=True)
     texts = [text for _, text in lines] or ["none"]
+    balance = START_CASH + float(wallet.get("realized") or 0)
     chunks = [texts[i:i + 40] for i in range(0, len(texts), 40)]
     for index, chunk in enumerate(chunks, start=1):
         header = f"PAPER BOOK {green} green, {red} red" if index == 1 else f"PAPER BOOK continued {index}/{len(chunks)}"
-        send_telegram(header + "\n" + "\n".join(chunk) + "\nNot a live fill.")
+        extra = f"\n{wallet_line(wallet)} Open marks ${open_pnl:+.2f}. Equity ${balance + open_pnl:.2f}." if index == 1 else ""
+        send_telegram(header + extra + "\n" + "\n".join(chunk) + "\nNot a live fill.")
 
 
-def catch_up(open_rows: dict, prices: dict) -> None:
+def catch_up(open_rows: dict, prices: dict, wallet: dict) -> None:
     due = []
     for trade in open_rows.values():
         price = prices.get(trade.get("symbol"))
@@ -173,7 +200,7 @@ def catch_up(open_rows: dict, prices: dict) -> None:
             due.append(f"{trade.get('symbol')} {side_of(trade)} half off at {price:.6g}, {gain:.0f}%")
     if due:
         send_telegram("PAPER STAGGER catch-up\n" + "\n".join(due[:20]) + "\nNot a live fill.")
-    book(open_rows, prices)
+    book(open_rows, prices, wallet)
 
 
 def resolve(trade: dict, price: float, now: float):
@@ -224,10 +251,13 @@ def main() -> None:
     open_rows = load_open()
     offset = 0
     closed = load_closed()
+    wallet = load_wallet()
+    save_wallet(wallet)
     last_book = time.time()
+    send_telegram(wallet_line(wallet) + " Starts now. Older closes are not included. Not a live fill.")
     try:
         offset = ingest(open_rows, 0, leverage_map())
-        catch_up(open_rows, market())
+        catch_up(open_rows, market(), wallet)
         save_open(open_rows)
     except Exception:
         send_telegram("Paper follower startup error\n" + traceback.format_exc()[-500:])
@@ -252,7 +282,10 @@ def main() -> None:
                 elif result == "second":
                     send_telegram(f"PAPER SECOND {trade.get('symbol')} {side} another quarter off at {price:.6g}. Runner is 25%. Not a live fill.")
                 elif result:
-                    send_telegram(f"PAPER {result.upper()} {trade.get('symbol')} {side} ${dollars:+.2f}. Not a live fill.")
+                    wallet["realized"] = float(wallet.get("realized") or 0) + dollars
+                    wallet["closes"] = int(wallet.get("closes") or 0) + 1
+                    save_wallet(wallet)
+                    send_telegram(f"PAPER {result.upper()} {trade.get('symbol')} {side} ${dollars:+.2f}. {wallet_line(wallet)} Not a live fill.")
                     open_rows.pop(key, None)
                     done = dict(trade)
                     done.update({"result": result, "exit": price, "pnl": dollars, "closed_at": now})
@@ -262,7 +295,7 @@ def main() -> None:
             save_open(open_rows)
             update_from_outcomes(closed)
             if now - last_book >= BOOK_SECONDS:
-                book(open_rows, prices)
+                book(open_rows, prices, wallet)
                 last_book = now
         except Exception as exc:
             log.error("Paper loop failed: %s", exc)
