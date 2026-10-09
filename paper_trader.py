@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. A banked winner stays open. A loser times out at 6 hours."""
+"""Paper follower. At 100% the full position trails. No half sale."""
 
 import json
 import os
@@ -23,7 +23,6 @@ CAUTIOUS_ADD_AT = (250.0, 450.0)
 BTC_TREND_PCT = 3.0
 STOP_DOLLARS = 50.0
 BANK_AT_PCT = 100.0
-SECOND_BANK_PCT = 250.0
 TRAIL_KEEP = 0.7
 DEFAULT_LEVERAGE = 20.0
 START_CASH = 1000.0
@@ -158,7 +157,7 @@ def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
         row.update({
             "margin": 1.0, "avg": entry, "adds": 0, "runner": 1.0,
             "banked": 0.0, "peak_pct": 0.0, "best": entry, "leverage": lev,
-            "partial_sent": False, "second_sent": False,
+            "trail_armed": False,
         })
         open_rows[key] = row
         open_symbols.add(symbol)
@@ -212,19 +211,11 @@ def catch_up(open_rows: dict, prices: dict, wallet: dict) -> None:
             continue
         gain = gain_now(trade, price)
         trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), gain)
-        if gain >= SECOND_BANK_PCT and not trade.get("second_sent"):
-            trade["banked"] = float(trade.get("banked") or 0) + float(trade.get("margin") or 1) * 0.25 * gain / 100
-            trade["runner"] = 0.25
-            trade["partial_sent"] = True
-            trade["second_sent"] = True
-            due.append(f"{trade.get('symbol')} {side_of(trade)} second bank at {price:.6g}, {gain:.0f}%")
-        elif gain >= BANK_AT_PCT and not trade.get("partial_sent"):
-            trade["banked"] = float(trade.get("margin") or 1) * 0.5 * gain / 100
-            trade["runner"] = 0.5
-            trade["partial_sent"] = True
-            due.append(f"{trade.get('symbol')} {side_of(trade)} half off at {price:.6g}, {gain:.0f}%")
+        if gain >= BANK_AT_PCT and not trade.get("trail_armed"):
+            trade["trail_armed"] = True
+            due.append(f"{trade.get('symbol')} {side_of(trade)} trail armed at {gain:.0f}%")
     if due:
-        send_telegram("PAPER STAGGER catch-up\n" + "\n".join(due[:20]) + "\nNot a live fill.")
+        send_telegram("PAPER TRAIL armed\n" + "\n".join(due[:20]) + "\nFull size stays on. Not a live fill.")
     book(open_rows, prices, wallet)
 
 
@@ -244,7 +235,7 @@ def resolve(trade: dict, price: float, now: float, tape: float):
     open_dollars = float(trade.get("margin") or 1) * runner * current / 100
     cautious = (side == "long" and tape <= -BTC_TREND_PCT) or (side == "short" and tape >= BTC_TREND_PCT)
     add_at = CAUTIOUS_ADD_AT if cautious else ADD_AT_MARGIN_PCT
-    if runner >= 1 and adds < len(ADD_MARGINS):
+    if runner >= 1 and adds < len(ADD_MARGINS) and not trade.get("trail_armed"):
         against = -move_pct(side, float(trade.get("entry") or avg), price)
         if against >= add_at[adds] / lev:
             add = ADD_MARGINS[adds]
@@ -253,23 +244,15 @@ def resolve(trade: dict, price: float, now: float, tape: float):
             trade["margin"] = margin + add
             trade["adds"] = adds + 1
             return "add", open_dollars
-    if current >= SECOND_BANK_PCT and not trade.get("second_sent"):
-        trade["banked"] = float(trade.get("banked") or 0) + float(trade.get("margin") or 1) * 0.25 * current / 100
-        trade["runner"] = 0.25
-        trade["partial_sent"] = True
-        trade["second_sent"] = True
-        return "second", open_dollars
-    if current >= BANK_AT_PCT and not trade.get("partial_sent"):
-        trade["banked"] = float(trade.get("margin") or 1) * 0.5 * current / 100
-        trade["runner"] = 0.5
-        trade["partial_sent"] = True
-        return "partial", open_dollars
-    if trade.get("partial_sent") and trade["peak_pct"] >= BANK_AT_PCT and current <= trade["peak_pct"] * TRAIL_KEEP and current > 0:
+    if current >= BANK_AT_PCT and not trade.get("trail_armed"):
+        trade["trail_armed"] = True
+        return "armed", open_dollars
+    if trade.get("trail_armed") and trade["peak_pct"] >= BANK_AT_PCT and current <= trade["peak_pct"] * TRAIL_KEEP and current > 0:
         return "trail", open_dollars + float(trade.get("banked") or 0)
     if runner >= 1 and open_dollars <= -STOP_DOLLARS:
         return "stop", open_dollars
     age = now - float(trade.get("ts") or now)
-    if age >= HOLD_SECONDS and (current <= 0 or not trade.get("partial_sent")):
+    if age >= HOLD_SECONDS and (current <= 0 or not trade.get("trail_armed")):
         return "timeout", open_dollars + float(trade.get("banked") or 0)
     return None, open_dollars
 
@@ -306,10 +289,11 @@ def main() -> None:
                         f"PAPER ADD {trade.get('symbol')} {side} margin ${trade['margin']:.0f} at {price:.6g}. "
                         f"Average now {float(trade['avg']):.6g}. Not a live fill."
                     )
-                elif result == "partial":
-                    send_telegram(f"PAPER PARTIAL {trade.get('symbol')} {side} half off at {price:.6g}. Banked ${float(trade.get('banked') or 0):.2f}. Not a live fill.")
-                elif result == "second":
-                    send_telegram(f"PAPER SECOND {trade.get('symbol')} {side} another quarter off at {price:.6g}. Runner is 25%. Not a live fill.")
+                elif result == "armed":
+                    send_telegram(
+                        f"PAPER TRAIL ARMED {trade.get('symbol')} {side} at {price:.6g}. "
+                        f"Full size stays on. Closes if it gives back to 70% of the peak. Not a live fill."
+                    )
                 elif result:
                     wallet["realized"] = float(wallet.get("realized") or 0) + dollars
                     wallet["closes"] = int(wallet.get("closes") or 0) + 1
