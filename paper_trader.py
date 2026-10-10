@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Wallet ignores trades opened before it started."""
+"""Paper follower. A short that keeps running is closed."""
 
 import json
 import os
@@ -24,6 +24,8 @@ BTC_TREND_PCT = 3.0
 STOP_DOLLARS = 50.0
 BANK_AT_PCT = 100.0
 TRAIL_KEEP = 0.7
+SHORT_ADD_CAP = 25.0
+SHORT_EXIT_PCT = 40.0
 DEFAULT_LEVERAGE = 20.0
 START_CASH = 1000.0
 WALLET_EPOCH = 2
@@ -111,18 +113,22 @@ def leverage_map() -> dict:
     return _leverage
 
 
-def market() -> dict:
+def market() -> tuple:
     rows = requests.get(TICKERS_URL, timeout=20).json().get("data") or []
     prices = {}
+    day = {}
     for row in rows:
         symbol = row.get("symbol")
         try:
             price = float(row.get("lastPrice") or row.get("last") or 0)
+            opened = float(row.get("open") or 0)
         except (TypeError, ValueError):
             continue
         if symbol and price > 0:
             prices[symbol] = price
-    return prices
+            if opened:
+                day[symbol] = (price - opened) / opened * 100
+    return prices, day
 
 
 def tape_change() -> float:
@@ -230,7 +236,7 @@ def catch_up(open_rows: dict, prices: dict, wallet: dict) -> None:
     book(open_rows, prices, wallet)
 
 
-def resolve(trade: dict, price: float, now: float, tape: float):
+def resolve(trade: dict, price: float, now: float, tape: float, day_change: float):
     side = trade.get("side")
     lev = float(trade.get("leverage") or DEFAULT_LEVERAGE)
     adds = int(trade.get("adds") or 0)
@@ -244,9 +250,12 @@ def resolve(trade: dict, price: float, now: float, tape: float):
     current = gain_now(trade, price)
     trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), peak)
     open_dollars = float(trade.get("margin") or 1) * runner * current / 100
+    if side == "short" and day_change >= SHORT_EXIT_PCT:
+        return "momentum", open_dollars + float(trade.get("banked") or 0)
     cautious = (side == "long" and tape <= -BTC_TREND_PCT) or (side == "short" and tape >= BTC_TREND_PCT)
     add_at = CAUTIOUS_ADD_AT if cautious else ADD_AT_MARGIN_PCT
-    if runner >= 1 and adds < len(ADD_MARGINS) and not trade.get("trail_armed"):
+    runaway = side == "short" and day_change >= SHORT_ADD_CAP
+    if runner >= 1 and adds < len(ADD_MARGINS) and not trade.get("trail_armed") and not runaway:
         against = -move_pct(side, float(trade.get("entry") or avg), price)
         if against >= add_at[adds] / lev:
             add = ADD_MARGINS[adds]
@@ -276,16 +285,17 @@ def main() -> None:
     wallet = load_wallet()
     save_wallet(wallet)
     last_book = time.time()
-    send_telegram(wallet_line(wallet) + " Reset. Trades opened before this do not count. Not a live fill.")
+    send_telegram(wallet_line(wallet) + " Shorts that keep running now close. Not a live fill.")
     try:
+        prices, day = market()
         offset = ingest(open_rows, 0, leverage_map())
-        catch_up(open_rows, market(), wallet)
+        catch_up(open_rows, prices, wallet)
         save_open(open_rows)
     except Exception:
         send_telegram("Paper follower startup error\n" + traceback.format_exc()[-500:])
     while True:
         try:
-            prices = market()
+            prices, day = market()
             tape = tape_change()
             offset = ingest(open_rows, offset, leverage_map())
             now = time.time()
@@ -293,7 +303,7 @@ def main() -> None:
                 price = prices.get(trade.get("symbol"))
                 if not price:
                     continue
-                result, dollars = resolve(trade, price, now, tape)
+                result, dollars = resolve(trade, price, now, tape, float(day.get(trade.get("symbol")) or 0))
                 side = side_of(trade)
                 if result == "add":
                     send_telegram(
