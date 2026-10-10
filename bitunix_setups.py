@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Watching alerts. A hard Bitcoin day asks for a deeper move."""
+"""Watching alerts. Skip extreme pumps. Bounce-long a pullback."""
 
 import logging
 import os
@@ -25,6 +25,10 @@ MIN_VOLUME_USDT = 200000
 SHORT_DAY_PCT = 8.0
 LONG_DAY_PCT = 12.0
 LONG_OFF_LOW_PCT = 0.4
+SHORT_SKIP_PCT = 40.0
+BOUNCE_PUMP_PCT = 20.0
+BOUNCE_PULLBACK_MIN = 0.5
+BOUNCE_PULLBACK_MAX = 1.5
 BTC_TREND_PCT = 3.0
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 DEPTH_URL = "https://fapi.bitunix.com/api/v1/futures/market/depth"
@@ -157,11 +161,14 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
 
     needed = move_needed(symbol)
     day_change = (price - day_open) / day_open * 100 if day_open else 0
-    near_high = day_high and (day_high - price) / day_high * 100 <= 1.5
+    off_high = (day_high - price) / day_high * 100 if day_high else 0
+    near_high = day_high and off_high <= 1.5
     off_low = day_low and (price - day_low) / day_low * 100
     near_low = day_low and off_low <= 1.5 and off_low >= LONG_OFF_LOW_PCT
     long_needed = LONG_DAY_PCT + (6 if btc_change <= -BTC_TREND_PCT else 0)
     short_needed = SHORT_DAY_PCT + (4 if btc_change >= BTC_TREND_PCT else 0)
+    extreme = day_change >= SHORT_SKIP_PCT
+    bounce = day_change >= BOUNCE_PUMP_PCT and BOUNCE_PULLBACK_MIN <= off_high <= BOUNCE_PULLBACK_MAX
     cautious = ""
     if btc_change <= -BTC_TREND_PCT:
         cautious = f"Bitcoin is down {abs(btc_change):.1f}%. Waiting for a deeper drop.\n"
@@ -169,7 +176,19 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
         cautious = f"Bitcoin is up {btc_change:.1f}%. Waiting for a bigger push.\n"
 
     if now - last_candidate.get(symbol, 0) >= COOLDOWN_SECONDS:
-        if near_high and day_change >= short_needed:
+        if bounce:
+            last_candidate[symbol] = now
+            send_telegram(
+                f"\U0001f7e2 <b>WATCHING LONG</b> {symbol}\n"
+                f"Up <b>{day_change:.1f}%</b> today, price {price:.6g}\n"
+                f"Pulled back {off_high:.1f}% off the high. Bounce long, not a short.\n"
+                f"{cautious}"
+                f"Not an order\n"
+                f"{chart_link(symbol)}\n"
+                f"{ta_snapshot(symbol, price)}"
+            )
+            open_paper(symbol, "long", price, now)
+        elif near_high and day_change >= short_needed and not extreme:
             last_candidate[symbol] = now
             send_telegram(
                 f"\U0001f7e0 <b>WATCHING SHORT</b> {symbol}\n"
@@ -199,7 +218,8 @@ def check(symbol: str, price: float, now: float, day_high: float, day_low: float
     prior_low = min((item[1] for item in window[: high_i + 1]), default=None)
     prior_high = max((item[1] for item in window[: low_i + 1]), default=None)
     short_ready = (
-        prior_low
+        not extreme
+        and prior_low
         and now - high_time <= FRESH_SECONDS
         and (high - prior_low) / prior_low * 100 >= needed
         and (high - price) / high * 100 >= REJECT_PCT
