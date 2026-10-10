@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. A short that keeps running is closed."""
+"""Paper follower. Half off at 70% of peak. Rest trails to 50%."""
 
 import json
 import os
@@ -24,6 +24,7 @@ BTC_TREND_PCT = 3.0
 STOP_DOLLARS = 50.0
 BANK_AT_PCT = 100.0
 TRAIL_KEEP = 0.7
+TRAIL_REST = 0.5
 SHORT_ADD_CAP = 25.0
 SHORT_EXIT_PCT = 40.0
 DEFAULT_LEVERAGE = 20.0
@@ -172,7 +173,7 @@ def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
         row.update({
             "margin": 1.0, "avg": entry, "adds": 0, "runner": 1.0,
             "banked": 0.0, "peak_pct": 0.0, "best": entry, "leverage": lev,
-            "trail_armed": False,
+            "trail_armed": False, "half_sold": False,
         })
         open_rows[key] = row
         open_symbols.add(symbol)
@@ -232,7 +233,7 @@ def catch_up(open_rows: dict, prices: dict, wallet: dict) -> None:
             trade["trail_armed"] = True
             due.append(f"{trade.get('symbol')} {side_of(trade)} trail armed at {gain:.0f}%")
     if due:
-        send_telegram("PAPER TRAIL armed\n" + "\n".join(due[:20]) + "\nFull size stays on. Not a live fill.")
+        send_telegram("PAPER TRAIL armed\n" + "\n".join(due[:20]) + "\nHalf off at 70% of peak. Rest trails to 50%. Not a live fill.")
     book(open_rows, prices, wallet)
 
 
@@ -267,7 +268,13 @@ def resolve(trade: dict, price: float, now: float, tape: float, day_change: floa
     if current >= BANK_AT_PCT and not trade.get("trail_armed"):
         trade["trail_armed"] = True
         return "armed", open_dollars
-    if trade.get("trail_armed") and trade["peak_pct"] >= BANK_AT_PCT and current <= trade["peak_pct"] * TRAIL_KEEP and current > 0:
+    if trade.get("trail_armed") and trade["peak_pct"] >= BANK_AT_PCT and not trade.get("half_sold") and current <= trade["peak_pct"] * TRAIL_KEEP and current > 0:
+        banked = float(trade.get("margin") or 1) * 0.5 * current / 100
+        trade["banked"] = float(trade.get("banked") or 0) + banked
+        trade["runner"] = 0.5
+        trade["half_sold"] = True
+        return "half", banked
+    if trade.get("half_sold") and trade["peak_pct"] >= BANK_AT_PCT and current <= trade["peak_pct"] * TRAIL_REST and current > 0:
         return "trail", open_dollars + float(trade.get("banked") or 0)
     if runner >= 1 and open_dollars <= -STOP_DOLLARS:
         return "stop", open_dollars
@@ -285,7 +292,7 @@ def main() -> None:
     wallet = load_wallet()
     save_wallet(wallet)
     last_book = time.time()
-    send_telegram(wallet_line(wallet) + " Shorts that keep running now close. Not a live fill.")
+    send_telegram(wallet_line(wallet) + " Half off at 70% of peak. Rest trails to 50%. Not a live fill.")
     try:
         prices, day = market()
         offset = ingest(open_rows, 0, leverage_map())
@@ -314,7 +321,15 @@ def main() -> None:
                     if counts_for_wallet(trade, wallet):
                         send_telegram(
                             f"PAPER TRAIL ARMED {trade.get('symbol')} {side} at {price:.6g}. "
-                            f"Full size stays on. Closes if it gives back to 70% of the peak. Not a live fill."
+                            f"Half off if it gives back to 70% of the peak. Rest trails to 50%. Not a live fill."
+                        )
+                elif result == "half":
+                    if counts_for_wallet(trade, wallet):
+                        wallet["realized"] = float(wallet.get("realized") or 0) + dollars
+                        save_wallet(wallet)
+                        send_telegram(
+                            f"PAPER HALF {trade.get('symbol')} {side} ${dollars:+.2f} at {price:.6g}. "
+                            f"Rest stays on. {wallet_line(wallet)} Not a live fill."
                         )
                 elif result:
                     counted = counts_for_wallet(trade, wallet)
