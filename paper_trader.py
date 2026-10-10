@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Paper follower. Half off at 70% of peak. Rest trails to 50%."""
+"""Paper follower. Low leverage starts larger and trails earlier."""
 
 import json
 import os
@@ -15,14 +15,17 @@ from thresholds import update_from_outcomes
 TICKERS_URL = "https://fapi.bitunix.com/api/v1/futures/market/tickers"
 PAIRS_URL = "https://fapi.bitunix.com/api/v1/futures/market/trading_pairs"
 POLL_SECONDS = 15
-HOLD_SECONDS = 6 * 60 * 60
+HOLD_SECONDS = 24 * 60 * 60
 BOOK_SECONDS = 60 * 60
 ADD_MARGINS = (1.0, 3.0)
+LOW_ADD_MARGINS = (3.0,)
 ADD_AT_MARGIN_PCT = (150.0, 300.0)
 CAUTIOUS_ADD_AT = (250.0, 450.0)
 BTC_TREND_PCT = 3.0
 STOP_DOLLARS = 50.0
 BANK_AT_PCT = 100.0
+LOW_BANK_AT_PCT = 50.0
+LOW_LEVERAGE = 25.0
 TRAIL_KEEP = 0.7
 TRAIL_REST = 0.5
 SHORT_ADD_CAP = 25.0
@@ -170,9 +173,12 @@ def ingest(open_rows: dict, offset: int, leverage: dict) -> int:
             continue
         entry = float(row["entry"])
         lev = leverage.get(symbol) or DEFAULT_LEVERAGE
+        low = lev <= LOW_LEVERAGE
         row.update({
-            "margin": 1.0, "avg": entry, "adds": 0, "runner": 1.0,
+            "margin": 2.0 if low else 1.0, "avg": entry, "adds": 0, "runner": 1.0,
             "banked": 0.0, "peak_pct": 0.0, "best": entry, "leverage": lev,
+            "add_margins": list(LOW_ADD_MARGINS if low else ADD_MARGINS),
+            "bank_at": LOW_BANK_AT_PCT if low else BANK_AT_PCT,
             "trail_armed": False, "half_sold": False,
         })
         open_rows[key] = row
@@ -229,7 +235,8 @@ def catch_up(open_rows: dict, prices: dict, wallet: dict) -> None:
             continue
         gain = gain_now(trade, price)
         trade["peak_pct"] = max(float(trade.get("peak_pct") or 0), gain)
-        if gain >= BANK_AT_PCT and not trade.get("trail_armed") and counts_for_wallet(trade, wallet):
+        bank_at = float(trade.get("bank_at") or BANK_AT_PCT)
+        if gain >= bank_at and not trade.get("trail_armed") and counts_for_wallet(trade, wallet):
             trade["trail_armed"] = True
             due.append(f"{trade.get('symbol')} {side_of(trade)} trail armed at {gain:.0f}%")
     if due:
@@ -243,6 +250,8 @@ def resolve(trade: dict, price: float, now: float, tape: float, day_change: floa
     adds = int(trade.get("adds") or 0)
     runner = float(trade.get("runner") or 1)
     avg = float(trade.get("avg") or trade.get("entry") or 0)
+    add_margins = trade.get("add_margins") or list(ADD_MARGINS)
+    bank_at = float(trade.get("bank_at") or BANK_AT_PCT)
     if side == "long":
         trade["best"] = max(float(trade.get("best") or price), price)
     else:
@@ -256,25 +265,25 @@ def resolve(trade: dict, price: float, now: float, tape: float, day_change: floa
     cautious = (side == "long" and tape <= -BTC_TREND_PCT) or (side == "short" and tape >= BTC_TREND_PCT)
     add_at = CAUTIOUS_ADD_AT if cautious else ADD_AT_MARGIN_PCT
     runaway = side == "short" and day_change >= SHORT_ADD_CAP
-    if runner >= 1 and adds < len(ADD_MARGINS) and not trade.get("trail_armed") and not runaway:
+    if runner >= 1 and adds < len(add_margins) and adds < len(add_at) and not trade.get("trail_armed") and not runaway:
         against = -move_pct(side, float(trade.get("entry") or avg), price)
         if against >= add_at[adds] / lev:
-            add = ADD_MARGINS[adds]
+            add = float(add_margins[adds])
             margin = float(trade["margin"])
             trade["avg"] = (avg * margin + price * add) / (margin + add)
             trade["margin"] = margin + add
             trade["adds"] = adds + 1
             return "add", open_dollars
-    if current >= BANK_AT_PCT and not trade.get("trail_armed"):
+    if current >= bank_at and not trade.get("trail_armed"):
         trade["trail_armed"] = True
         return "armed", open_dollars
-    if trade.get("trail_armed") and trade["peak_pct"] >= BANK_AT_PCT and not trade.get("half_sold") and current <= trade["peak_pct"] * TRAIL_KEEP and current > 0:
+    if trade.get("trail_armed") and trade["peak_pct"] >= bank_at and not trade.get("half_sold") and current <= trade["peak_pct"] * TRAIL_KEEP and current > 0:
         banked = float(trade.get("margin") or 1) * 0.5 * current / 100
         trade["banked"] = float(trade.get("banked") or 0) + banked
         trade["runner"] = 0.5
         trade["half_sold"] = True
         return "half", banked
-    if trade.get("half_sold") and trade["peak_pct"] >= BANK_AT_PCT and current <= trade["peak_pct"] * TRAIL_REST and current > 0:
+    if trade.get("half_sold") and trade["peak_pct"] >= bank_at and current <= trade["peak_pct"] * TRAIL_REST and current > 0:
         return "trail", open_dollars + float(trade.get("banked") or 0)
     if runner >= 1 and open_dollars <= -STOP_DOLLARS:
         return "stop", open_dollars
@@ -292,7 +301,7 @@ def main() -> None:
     wallet = load_wallet()
     save_wallet(wallet)
     last_book = time.time()
-    send_telegram(wallet_line(wallet) + " Half off at 70% of peak. Rest trails to 50%. Not a live fill.")
+    send_telegram(wallet_line(wallet) + " Low leverage starts at $2 and trails at 50%. Timeout is 24 hours. Not a live fill.")
     try:
         prices, day = market()
         offset = ingest(open_rows, 0, leverage_map())
